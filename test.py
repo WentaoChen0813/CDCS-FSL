@@ -133,11 +133,14 @@ if __name__ == '__main__':
             if split == 'base':
                 loadfile = configs.data_dir['omniglot'] + 'noLatin.json' 
             else:
-                loadfile  = configs.data_dir['emnist'] + split +'.json' 
+                loadfile  = configs.data_dir['emnist'] + split +'.json'
+        elif params.dataset == 'DomainNet':
+            data_folder = os.path.join('/mnt/sdb/wentao/few-shot-learning/dataset/DomainNet/real/',
+                                       split)
         else: 
             loadfile    = configs.data_dir[params.dataset] + split + '.json'
 
-        novel_loader     = datamgr.get_data_loader( loadfile, aug = False)
+        novel_loader     = datamgr.get_data_loader( loadfile, data_folder, aug = False)
         if params.adaptation:
             model.task_update_num = 100 #We perform adaptation on MAML simply by updating more times.
         model.eval()

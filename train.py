@@ -7,8 +7,10 @@ import torch.optim.lr_scheduler as lr_scheduler
 import time
 import os
 import glob
+import random
 
 import configs
+from Logger import Logger
 import backbone
 from data.datamgr import SimpleDataManager, SetDataManager
 from methods.baselinetrain import BaselineTrain
@@ -25,17 +27,17 @@ def train(base_loader, val_loader, model, optimization, start_epoch, stop_epoch,
     else:
        raise ValueError('Unknown optimization, please define by yourself')
 
-    max_acc = 0       
-
+    max_acc = 0
     for epoch in range(start_epoch,stop_epoch):
         model.train()
-        model.train_loop(epoch, base_loader,  optimizer ) #model are called by reference, no need to return 
+        end = time.time()
+        loss = model.train_loop(epoch, base_loader,  optimizer ) #model are called by reference, no need to return
+        print(f'Training time: {time.time()-end:.0f} s')
+        params.logger.scalar_summary('train/loss', loss, epoch)
+
         model.eval()
-
-        if not os.path.isdir(params.checkpoint_dir):
-            os.makedirs(params.checkpoint_dir)
-
-        acc = model.test_loop( val_loader)
+        acc = model.test_loop(epoch, val_loader, params)
+        params.logger.scalar_summary('test/acc', acc, epoch)
         if acc > max_acc : #for baseline and baseline++, we don't use validation in default and we let acc = -1, but we allow options to validate with DB index
             print("best model! save...")
             max_acc = acc
@@ -49,8 +51,13 @@ def train(base_loader, val_loader, model, optimization, start_epoch, stop_epoch,
     return model
 
 if __name__=='__main__':
-    np.random.seed(10)
     params = parse_args('train')
+    os.environ['CUDA_VISIBLE_DEVICES'] = params.gpu
+    if params.seed >= 0:
+        np.random.seed(params.seed)
+        random.seed(params.seed)
+        torch.manual_seed(params.seed)
+        torch.backends.cudnn.deterministic = True
 
 
     if params.dataset == 'cross':
@@ -58,7 +65,17 @@ if __name__=='__main__':
         val_file   = configs.data_dir['CUB'] + 'val.json' 
     elif params.dataset == 'cross_char':
         base_file = configs.data_dir['omniglot'] + 'noLatin.json' 
-        val_file   = configs.data_dir['emnist'] + 'val.json' 
+        val_file   = configs.data_dir['emnist'] + 'val.json'
+    elif params.dataset == 'DomainNet':
+        base_folder = '/mnt/sdb/wentao/few-shot-learning/dataset/DomainNet/real/base/'
+        val_folder = os.path.join('/mnt/sdb/wentao/few-shot-learning/dataset/DomainNet/real/',
+                                   params.split)
+        if params.cross_domain:
+            val_folder = [os.path.join(f'/mnt/sdb/wentao/few-shot-learning/dataset/DomainNet/{params.cross_domain}/',
+                                       params.split),
+                          val_folder
+                          ]
+
     else:
         base_file = configs.data_dir[params.dataset] + 'base.json' 
         val_file   = configs.data_dir[params.dataset] + 'val.json' 
@@ -97,10 +114,11 @@ if __name__=='__main__':
      
 
     if params.method in ['baseline', 'baseline++'] :
-        base_datamgr    = SimpleDataManager(image_size, batch_size = 16)
-        base_loader     = base_datamgr.get_data_loader( base_file , aug = params.train_aug )
-        val_datamgr     = SimpleDataManager(image_size, batch_size = 64)
-        val_loader      = val_datamgr.get_data_loader( val_file, aug = False)
+        base_datamgr    = SimpleDataManager(image_size, batch_size = 128)
+        base_loader     = base_datamgr.get_data_loader( data_folder=base_folder, aug = params.train_aug )
+        few_shot_params = dict(n_way=params.test_n_way, n_support=params.n_shot)
+        val_datamgr = SetDataManager(image_size, n_query = 15, n_episode=params.n_episode, **few_shot_params)
+        val_loader = val_datamgr.get_data_loader(data_folder=val_folder, aug=False)
         
         if params.dataset == 'omniglot':
             assert params.num_classes >= 4112, 'class number need to be larger than max label id in base class'
@@ -113,15 +131,15 @@ if __name__=='__main__':
             model           = BaselineTrain( model_dict[params.model], params.num_classes, loss_type = 'dist')
 
     elif params.method in ['protonet','matchingnet','relationnet', 'relationnet_softmax', 'maml', 'maml_approx']:
-        n_query = max(1, int(16* params.test_n_way/params.train_n_way)) #if test_n_way is smaller than train_n_way, reduce n_query to keep batch size small
+        n_query = max(1, int(15* params.test_n_way/params.train_n_way)) #if test_n_way is smaller than train_n_way, reduce n_query to keep batch size small
  
         train_few_shot_params    = dict(n_way = params.train_n_way, n_support = params.n_shot) 
         base_datamgr            = SetDataManager(image_size, n_query = n_query,  **train_few_shot_params)
-        base_loader             = base_datamgr.get_data_loader( base_file , aug = params.train_aug )
+        base_loader             = base_datamgr.get_data_loader( data_folder=base_folder, aug=params.train_aug, fix_seed=False)
          
         test_few_shot_params     = dict(n_way = params.test_n_way, n_support = params.n_shot) 
-        val_datamgr             = SetDataManager(image_size, n_query = n_query, **test_few_shot_params)
-        val_loader              = val_datamgr.get_data_loader( val_file, aug = False) 
+        val_datamgr             = SetDataManager(image_size, n_query = n_query, n_episode=params.n_episode, **test_few_shot_params)
+        val_loader              = val_datamgr.get_data_loader( data_folder=val_folder, aug = False)
         #a batch for SetDataManager: a [n_way, n_support + n_query, dim, w, h] tensor        
 
         if params.method == 'protonet':
@@ -160,9 +178,15 @@ if __name__=='__main__':
         params.checkpoint_dir += '_aug'
     if not params.method  in ['baseline', 'baseline++']: 
         params.checkpoint_dir += '_%dway_%dshot' %( params.train_n_way, params.n_shot)
+    params.checkpoint_dir += f'/{params.exp}'
 
     if not os.path.isdir(params.checkpoint_dir):
         os.makedirs(params.checkpoint_dir)
+
+    log_dir = params.checkpoint_dir.replace('checkpoints', 'tensorboard')
+    if not os.path.isdir(log_dir):
+        os.makedirs(log_dir)
+    params.logger = Logger(log_dir)
 
     start_epoch = params.start_epoch
     stop_epoch = params.stop_epoch

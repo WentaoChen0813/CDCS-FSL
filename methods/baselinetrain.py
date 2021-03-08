@@ -1,5 +1,7 @@
 import backbone
 import utils
+from tqdm import tqdm
+from sklearn.linear_model import LogisticRegression
 
 import torch
 import torch.nn as nn
@@ -19,17 +21,17 @@ class BaselineTrain(nn.Module):
         self.loss_type = loss_type  #'softmax' #'dist'
         self.num_class = num_class
         self.loss_fn = nn.CrossEntropyLoss()
-        self.DBval = False; #only set True for CUB dataset, see issue #31
+        self.DBval = False #only set True for CUB dataset, see issue #31
 
     def forward(self,x):
-        x    = Variable(x.cuda())
+        x    = x.cuda()
         out  = self.feature.forward(x)
         scores  = self.classifier.forward(out)
         return scores
 
     def forward_loss(self, x, y):
         scores = self.forward(x)
-        y = Variable(y.cuda())
+        y = y.cuda()
         return self.loss_fn(scores, y )
     
     def train_loop(self, epoch, train_loader, optimizer):
@@ -47,12 +49,45 @@ class BaselineTrain(nn.Module):
             if i % print_freq==0:
                 #print(optimizer.state_dict()['param_groups'][0]['lr'])
                 print('Epoch {:d} | Batch {:d}/{:d} | Loss {:f}'.format(epoch, i, len(train_loader), avg_loss/float(i+1)  ))
+        return avg_loss / float(i+1)
                      
-    def test_loop(self, val_loader):
-        if self.DBval:
-            return self.analysis_loop(val_loader)
-        else:
-            return -1   #no validation, just save model during iteration
+    def test_loop(self, epoch, val_loader, params):
+        # if self.DBval:
+        #     return self.analysis_loop(val_loader)
+        # else:
+        #     return -1   #no validation, just save model during iteration
+        accs = []
+        with torch.no_grad():
+            for img, label in tqdm(val_loader):
+                n_way = params.test_n_way
+                n_shot = params.n_shot
+                n_query = img.shape[1] - n_shot
+
+                support_label = torch.arange(n_way).unsqueeze(1).repeat(1, n_shot).view(-1).numpy()
+                query_label = torch.arange(n_way).unsqueeze(1).repeat(1, n_query).view(-1).numpy()
+
+                img = img.cuda()
+                img = img.view(-1, *img.shape[2:])
+                features = self.feature(img)
+                features = F.normalize(features, dim=1)
+                features = features.view(n_way, n_shot+n_query, -1)
+                support_feature = features[:, :n_shot].detach().cpu().numpy().reshape(n_way*n_shot, -1)
+                query_feature = features[:, n_shot:].detach().cpu().numpy().reshape(n_way*n_query, -1)
+
+                clf = LogisticRegression(penalty='l2',
+                                         random_state=0,
+                                         C=1.0,
+                                         solver='lbfgs',
+                                         max_iter=1000,
+                                         multi_class='multinomial')
+                clf.fit(support_feature, support_label)
+                query_pred = clf.predict(query_feature)
+                acc = np.equal(query_pred, query_label).sum() / query_label.shape[0]
+                accs.append(acc*100)
+        acc_mean = np.mean(accs)
+        acc_std = np.std(accs)
+        print('Epoch %d, Test Acc = %4.2f%% +- %4.2f%%' % (epoch, acc_mean, 1.96 * acc_std / np.sqrt(len(accs))))
+        return acc_mean
 
     def analysis_loop(self, val_loader, record = None):
         class_file  = {}

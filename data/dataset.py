@@ -27,33 +27,99 @@ class SimpleDataset:
 
 
 class SetDataset:
-    def __init__(self, data_file, batch_size, transform):
-        with open(data_file, 'r') as f:
-            self.meta = json.load(f)
- 
-        self.cl_list = np.unique(self.meta['image_labels']).tolist()
+    def __init__(self, data_file, data_folder, batch_size, transform):
+        self.cross_domain = False
+        self.sample_number = 0
+        if data_file is not None:
+            with open(data_file, 'r') as f:
+                self.meta = json.load(f)
 
-        self.sub_meta = {}
-        for cl in self.cl_list:
-            self.sub_meta[cl] = []
+            self.cl_list = np.unique(self.meta['image_labels']).tolist()
 
-        for x,y in zip(self.meta['image_names'],self.meta['image_labels']):
-            self.sub_meta[y].append(x)
+            self.sub_meta = {}
+            for cl in self.cl_list:
+                self.sub_meta[cl] = []
 
-        self.sub_dataloader = [] 
-        sub_data_loader_params = dict(batch_size = batch_size,
-                                  shuffle = True,
-                                  num_workers = 0, #use main thread only or may receive multiple batches
-                                  pin_memory = False)        
-        for cl in self.cl_list:
-            sub_dataset = SubDataset(self.sub_meta[cl], cl, transform = transform )
-            self.sub_dataloader.append( torch.utils.data.DataLoader(sub_dataset, **sub_data_loader_params) )
+            for x,y in zip(self.meta['image_names'],self.meta['image_labels']):
+                self.sub_meta[y].append(x)
+                self.sample_number += 1
+
+            self.sub_dataloader = []
+            sub_data_loader_params = dict(batch_size=batch_size,
+                                          shuffle=True,
+                                          num_workers=0,  # use main thread only or may receive multiple batches
+                                          pin_memory=False)
+            for cl in self.cl_list:
+                sub_dataset = SubDataset(self.sub_meta[cl], cl, transform=transform)
+                self.sub_dataloader.append(torch.utils.data.DataLoader(sub_dataset, **sub_data_loader_params))
+
+        elif not isinstance(data_folder, list):
+            import torchvision
+            dataset = torchvision.datasets.ImageFolder(data_folder)
+            self.sample_number = len(dataset)
+            self.sub_meta = {}
+            self.cl_list = list(range(len(dataset.classes)))
+            for cl in self.cl_list:
+                self.sub_meta[cl] = []
+
+            for x, y in dataset.imgs:
+                self.sub_meta[y].append(x)
+
+            self.sub_dataloader = []
+            sub_data_loader_params = dict(batch_size = batch_size,
+                                      shuffle = True,
+                                      num_workers = 0, #use main thread only or may receive multiple batches
+                                      pin_memory = False)
+            for cl in self.cl_list:
+                sub_dataset = SubDataset(self.sub_meta[cl], cl, transform = transform )
+                self.sub_dataloader.append( torch.utils.data.DataLoader(sub_dataset, **sub_data_loader_params) )
+
+        else:
+            self.cross_domain = True
+            import torchvision
+            support_dataset = torchvision.datasets.ImageFolder(data_folder[0])
+            query_dataset = torchvision.datasets.ImageFolder(data_folder[1])
+            self.sample_number = len(support_dataset) + len(query_dataset)
+            self.sub_support_meta = {}
+            self.sub_query_meta = {}
+            self.cl_list = list(range(len(support_dataset.classes)))
+            for cl in self.cl_list:
+                self.sub_support_meta[cl] = []
+                self.sub_query_meta[cl] = []
+            for x, y in support_dataset.imgs:
+                self.sub_support_meta[y].append(x)
+            for x, y in query_dataset.imgs:
+                self.sub_query_meta[y].append(x)
+            self.sub_support_dataloader = []
+            self.sub_query_dataloader = []
+            support_dataloader_params = dict(batch_size=batch_size[0],
+                                             shuffle=True,
+                                             num_workers=0,  # use main thread only or may receive multiple batches
+                                             pin_memory=False)
+            query_dataloader_params = dict(batch_size=batch_size[1],
+                                           shuffle=True,
+                                           num_workers=0,  # use main thread only or may receive multiple batches
+                                           pin_memory=False)
+            for cl in self.cl_list:
+                sub_support_dataset = SubDataset(self.sub_support_meta[cl], cl, transform=transform)
+                self.sub_support_dataloader.append(torch.utils.data.DataLoader(sub_support_dataset, **support_dataloader_params))
+                sub_query_dataset = SubDataset(self.sub_query_meta[cl], cl, transform=transform)
+                self.sub_query_dataloader.append(torch.utils.data.DataLoader(sub_query_dataset, **query_dataloader_params))
+
 
     def __getitem__(self,i):
-        return next(iter(self.sub_dataloader[i]))
+        if not self.cross_domain:
+            return next(iter(self.sub_dataloader[i]))
+        else:
+            support_img, support_label = next(iter(self.sub_support_dataloader[i]))
+            query_img, query_label = next(iter(self.sub_query_dataloader[i]))
+            return torch.cat([support_img, query_img]), torch.cat([support_label, query_label])
 
     def __len__(self):
         return len(self.cl_list)
+
+    def get_sample_number(self):
+        return self.sample_number
 
 class SubDataset:
     def __init__(self, sub_meta, cl, transform=transforms.ToTensor(), target_transform=identity):
@@ -74,14 +140,21 @@ class SubDataset:
         return len(self.sub_meta)
 
 class EpisodicBatchSampler(object):
-    def __init__(self, n_classes, n_way, n_episodes):
+    def __init__(self, n_classes, n_way, n_episodes, fix_seed=True):
         self.n_classes = n_classes
         self.n_way = n_way
         self.n_episodes = n_episodes
+        self.fix_seed = fix_seed
 
     def __len__(self):
         return self.n_episodes
 
     def __iter__(self):
+        seed = torch.get_rng_state()[0]
         for i in range(self.n_episodes):
+            if self.fix_seed:
+                torch.manual_seed(i)
             yield torch.randperm(self.n_classes)[:self.n_way]
+        if self.fix_seed:
+            torch.manual_seed(seed)
+

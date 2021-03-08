@@ -1,3 +1,5 @@
+from tqdm import tqdm
+
 import backbone
 import torch
 import torch.nn as nn
@@ -30,7 +32,7 @@ class MetaTemplate(nn.Module):
         return out
 
     def parse_feature(self,x,is_feature):
-        x    = Variable(x.cuda())
+        x    = x.cuda()
         if is_feature:
             z_all = x
         else:
@@ -63,19 +65,20 @@ class MetaTemplate(nn.Module):
             loss = self.set_forward_loss( x )
             loss.backward()
             optimizer.step()
-            avg_loss = avg_loss+loss.data[0]
+            avg_loss = avg_loss+loss.item()
 
             if i % print_freq==0:
                 #print(optimizer.state_dict()['param_groups'][0]['lr'])
                 print('Epoch {:d} | Batch {:d}/{:d} | Loss {:f}'.format(epoch, i, len(train_loader), avg_loss/float(i+1)))
+        return avg_loss/float(i+1)
 
-    def test_loop(self, test_loader, record = None):
+    def test_loop(self, epoch, test_loader, params):
         correct =0
         count = 0
         acc_all = []
         
         iter_num = len(test_loader) 
-        for i, (x,_) in enumerate(test_loader):
+        for x,_ in tqdm(test_loader):
             self.n_query = x.size(1) - self.n_support
             if self.change_way:
                 self.n_way  = x.size(0)
@@ -85,7 +88,7 @@ class MetaTemplate(nn.Module):
         acc_all  = np.asarray(acc_all)
         acc_mean = np.mean(acc_all)
         acc_std  = np.std(acc_all)
-        print('%d Test Acc = %4.2f%% +- %4.2f%%' %(iter_num,  acc_mean, 1.96* acc_std/np.sqrt(iter_num)))
+        print('Epoch %d, Test Acc = %4.2f%% +- %4.2f%%' % (epoch, acc_mean, 1.96 * acc_std / np.sqrt(iter_num)))
 
         return acc_mean
 
