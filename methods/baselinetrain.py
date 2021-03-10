@@ -10,7 +10,7 @@ import numpy as np
 import torch.nn.functional as F
 
 class BaselineTrain(nn.Module):
-    def __init__(self, model_func, num_class, loss_type = 'softmax'):
+    def __init__(self, model_func, num_class, loss_type = 'softmax', ad_align=False, ad_loss_weight=0.001):
         super(BaselineTrain, self).__init__()
         self.feature    = model_func()
         if loss_type == 'softmax':
@@ -22,6 +22,18 @@ class BaselineTrain(nn.Module):
         self.num_class = num_class
         self.loss_fn = nn.CrossEntropyLoss()
         self.DBval = False #only set True for CUB dataset, see issue #31
+        self.ad_align = ad_align
+        self.ad_loss_weight = ad_loss_weight
+        if ad_align:
+            feat_dim = self.feature.final_feat_dim
+            self.discriminator = nn.Sequential(
+                nn.Linear(feat_dim, feat_dim//2),
+                nn.LeakyReLU(0.2),
+                nn.Linear(feat_dim//2, feat_dim//4),
+                nn.LeakyReLU(0.2),
+                nn.Linear(feat_dim//4, 2)
+            )
+
 
     def forward(self,x):
         x    = x.cuda()
@@ -30,26 +42,71 @@ class BaselineTrain(nn.Module):
         return scores
 
     def forward_loss(self, x, y):
-        scores = self.forward(x)
+        x = x.cuda()
+        feature = self.feature(x)
+        scores = self.classifier(feature)
         y = y.cuda()
-        return self.loss_fn(scores, y )
+        return self.loss_fn(scores, y ), feature
+
+
+    def discriminator_loss(self, x, y, is_feature=False):
+        if not is_feature:
+            x = x.cuda()
+            x = self.feature(x)
+        pred = self.discriminator(x)
+        y = torch.ones(pred.shape[0], dtype=torch.long).cuda() * y
+        return self.loss_fn(pred, y), x
     
     def train_loop(self, epoch, train_loader, optimizer):
         print_freq = 10
         avg_loss=0
+        avg_ad_loss = 0
+        avg_discriminator_loss = 0
 
+        if self.ad_align:
+            train_loader, unlabeled_loader = train_loader
+            n_unlabeled = len(unlabeled_loader)
+            optimizer, discriminator_optim = optimizer
         for i, (x,y) in enumerate(train_loader):
+            loss, fx = self.forward_loss(x, y)
+            avg_loss = avg_loss + loss.item()
+
+            if self.ad_align:
+                if i % n_unlabeled == 0:
+                    unlabeled_iter = iter(unlabeled_loader)
+                ux, _ = next(unlabeled_iter)
+                ad_loss, fux = self.discriminator_loss(ux, 1)
+                ad_loss *= self.ad_loss_weight
+                avg_ad_loss += ad_loss.item()
+                loss += avg_ad_loss
+
             optimizer.zero_grad()
-            loss = self.forward_loss(x, y)
             loss.backward()
             optimizer.step()
 
-            avg_loss = avg_loss+loss.item()
+            if self.ad_align:
+                real_loss, _ = self.discriminator_loss(fx.detach(), 1, is_feature=True)
+                fake_loss, _ = self.discriminator_loss(fux.detach(), 0, is_feature=True)
+                discriminator_loss = (real_loss + fake_loss) / 2
+                avg_discriminator_loss += discriminator_loss.item()
+
+                discriminator_optim.zero_grad()
+                discriminator_loss.backward()
+                discriminator_optim.step()
 
             if i % print_freq==0:
                 #print(optimizer.state_dict()['param_groups'][0]['lr'])
-                print('Epoch {:d} | Batch {:d}/{:d} | Loss {:f}'.format(epoch, i, len(train_loader), avg_loss/float(i+1)  ))
-        return avg_loss / float(i+1)
+                if not self.ad_align:
+                    print('Epoch {:d} | Batch {:d}/{:d} | Loss {:f}'.format(epoch, i, len(train_loader), avg_loss/float(i+1)  ))
+                else:
+                    print('Epoch {:d} | Batch {:d}/{:d} | Loss {:f} | Ad_loss {:f} | Discriminator_loss {:f}'.format(
+                        epoch, i, len(train_loader), avg_loss/(i+1), avg_ad_loss/(i+1), avg_discriminator_loss/(i+1)))
+        if not self.ad_align:
+            return avg_loss / (i+1)
+        else:
+            return {'loss': avg_loss/(i+1),
+                    'ad_loss': avg_ad_loss/(i+1),
+                    'discriminator_loss': avg_discriminator_loss/(i+1)}
                      
     def test_loop(self, epoch, val_loader, params):
         # if self.DBval:

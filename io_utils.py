@@ -30,6 +30,10 @@ def parse_args(script):
     if script == 'train':
         parser.add_argument('--seed'        , default=0, type=int)
         parser.add_argument('--batch_size'  , default=128, type=int)
+        parser.add_argument('--ad_align'    , action='store_true')
+        parser.add_argument('--supervised_align', action='store_true')
+        parser.add_argument('--unlabeled_proportion', default=0.2, type=float)
+        parser.add_argument('--ad_loss_weight', default=0.001, type=float)
         parser.add_argument('--num_classes' , default=228, type=int, help='total number of classes in softmax, only used in baseline') #make it larger than the maximum label value in base class
         parser.add_argument('--save_freq'   , default=50, type=int, help='Save frequency')
         parser.add_argument('--start_epoch' , default=0, type=int,help ='Starting epoch')
@@ -37,6 +41,7 @@ def parse_args(script):
         parser.add_argument('--resume'      , action='store_true', help='continue from previous trained model with largest epoch')
         parser.add_argument('--warmup'      , action='store_true', help='continue from baseline, neglected if resume is true') #never used in the paper
         # test
+        parser.add_argument('--test', action='store_true')
         parser.add_argument('--n_episode', default=100, type=int)
         parser.add_argument('--split', default='novel',            help='base/val/novel')  # default novel, but you can also test base/val class accuracy if you want
         parser.add_argument('--save_iter', default=-1, type=int,   help='saved feature from the model trained in x epoch, use the best model if x is -1')
@@ -55,16 +60,21 @@ def get_assigned_file(checkpoint_dir,num):
     assign_file = os.path.join(checkpoint_dir, '{:d}.tar'.format(num))
     return assign_file
 
-def get_resume_file(checkpoint_dir):
-    filelist = glob.glob(os.path.join(checkpoint_dir, '*.tar'))
-    if len(filelist) == 0:
-        return None
+def get_resume_file(checkpoint_dir, save_iter=None):
+    if save_iter is None:
+        filelist = glob.glob(os.path.join(checkpoint_dir, '*.tar'))
+        if len(filelist) == 0:
+            return None
+        filelist = [x for x in filelist if os.path.basename(x) != 'best_model.tar']
+        epochs = np.array([int(os.path.splitext(os.path.basename(x))[0]) for x in filelist])
+        max_epoch = np.max(epochs)
+        resume_file = os.path.join(checkpoint_dir, '{:d}.tar'.format(max_epoch))
+        return resume_file
+    elif save_iter == -1:
+        return get_best_file(checkpoint_dir)
+    else:
+        return get_assigned_file(checkpoint_dir, save_iter)
 
-    filelist =  [ x  for x in filelist if os.path.basename(x) != 'best_model.tar' ]
-    epochs = np.array([int(os.path.splitext(os.path.basename(x))[0]) for x in filelist])
-    max_epoch = np.max(epochs)
-    resume_file = os.path.join(checkpoint_dir, '{:d}.tar'.format(max_epoch))
-    return resume_file
 
 def get_best_file(checkpoint_dir):    
     best_file = os.path.join(checkpoint_dir, 'best_model.tar')

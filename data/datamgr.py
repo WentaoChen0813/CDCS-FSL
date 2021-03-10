@@ -1,6 +1,7 @@
 # This code is modified from https://github.com/facebookresearch/low-shot-shrink-hallucinate
 
 import torch
+import torchvision
 from PIL import Image
 import numpy as np
 import torchvision.transforms as transforms
@@ -54,15 +55,20 @@ class SimpleDataManager(DataManager):
         self.batch_size = batch_size
         self.trans_loader = TransformLoader(image_size)
 
-    def get_data_loader(self, data_file=None, data_folder=None, aug=None): #parameters that would change on train/val set
+    def get_data_loader(self, data_file=None, data_folder=None, aug=None, proportion=1): #parameters that would change on train/val set
         transform = self.trans_loader.get_composed_transform(aug)
         if data_file is not None:
             dataset = SimpleDataset(data_file, transform)
-        else:
-            import torchvision
+        elif not isinstance(data_folder, list):
             dataset = torchvision.datasets.ImageFolder(data_folder, transform)
-            # only for debug
-            # dataset = torch.utils.data.random_split(dataset, [int(len(dataset)/50), len(dataset)-int(len(dataset)/50)])[0]
+        else:
+            dataset = []
+            for folder in data_folder:
+                dataset.append(torchvision.datasets.ImageFolder(folder, transform))
+            dataset = torch.utils.data.ConcatDataset(dataset)
+        if proportion < 1:
+            n_samples = int(len(dataset) * proportion)
+            dataset = torch.utils.data.random_split(dataset, [n_samples, len(dataset)-n_samples])[0]
         data_loader_params = dict(batch_size = self.batch_size, shuffle = True, num_workers = 12, pin_memory = True)       
         data_loader = torch.utils.data.DataLoader(dataset, **data_loader_params)
 

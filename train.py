@@ -19,21 +19,38 @@ from methods.protonet import ProtoNet
 from methods.matchingnet import MatchingNet
 from methods.relationnet import RelationNet
 from methods.maml import MAML
-from io_utils import model_dict, parse_args, get_resume_file  
+from io_utils import model_dict, parse_args, get_resume_file
 
-def train(base_loader, val_loader, model, optimization, start_epoch, stop_epoch, params):    
-    if optimization == 'Adam':
-        optimizer = torch.optim.Adam(model.parameters())
+
+def test(val_loader, model, params):
+    model.eval()
+    acc = model.test_loop(params.save_iter, val_loader, params)
+    return acc
+
+def train(base_loader, val_loader, model, optimization, start_epoch, stop_epoch, params):
+    if not params.ad_align:
+        if optimization == 'Adam':
+            optimizer = torch.optim.Adam(model.parameters())
+        else:
+           raise ValueError('Unknown optimization, please define by yourself')
     else:
-       raise ValueError('Unknown optimization, please define by yourself')
+        param_ids = [id(param) for param in model.discriminator]
+        base_params = [param for param in model.parameters() if id(param) not in param_ids]
+        base_optimizer = torch.optim.Adam(base_params)
+        discriminator_optimizer = torch.optim.Adam(model.discriminator.parameters())
+        optimizer = [base_optimizer, discriminator_optimizer]
 
     max_acc = 0
     for epoch in range(start_epoch,stop_epoch):
         model.train()
         end = time.time()
         loss = model.train_loop(epoch, base_loader,  optimizer ) #model are called by reference, no need to return
-        print(f'Training time: {time.time()-end:.0f} s')
-        params.logger.scalar_summary('train/loss', loss, epoch)
+        print(f'Training time: {time.time() - end:.0f} s')
+        if not isinstance(loss, dict):
+            params.logger.scalar_summary('train/loss', loss, epoch)
+        else:
+            for key, value in loss.items():
+                params.logger.scalar_summary(f'train/{key}', value, epoch)
 
         model.eval()
         acc = model.test_loop(epoch, val_loader, params)
@@ -52,6 +69,11 @@ def train(base_loader, val_loader, model, optimization, start_epoch, stop_epoch,
 
 if __name__=='__main__':
     params = parse_args('train')
+    #dubug
+    # params.exp = 'painting_real_ad_align'
+    # params.ad_align = True
+    # params.resume = True
+    # params.save_iter = 50
     os.environ['CUDA_VISIBLE_DEVICES'] = params.gpu
     if params.seed >= 0:
         np.random.seed(params.seed)
@@ -68,6 +90,9 @@ if __name__=='__main__':
         val_file   = configs.data_dir['emnist'] + 'val.json'
     elif params.dataset == 'DomainNet':
         base_folder = '/mnt/sdb/wentao/few-shot-learning/dataset/DomainNet/real/base/'
+        if params.supervised_align:
+            base_folder = [base_folder,
+                           f'/mnt/sdb/wentao/few-shot-learning/dataset/DomainNet/{params.cross_domain}/base/']
         val_folder = os.path.join('/mnt/sdb/wentao/few-shot-learning/dataset/DomainNet/real/',
                                    params.split)
         if params.cross_domain:
@@ -75,6 +100,10 @@ if __name__=='__main__':
                                        params.split),
                           val_folder
                           ]
+        if params.cross_domain and params.ad_align > 0:
+            unlabeled_folder = [f'/mnt/sdb/wentao/few-shot-learning/dataset/DomainNet/{params.cross_domain}/base',
+                                f'/mnt/sdb/wentao/few-shot-learning/dataset/DomainNet/{params.cross_domain}/val',
+                                f'/mnt/sdb/wentao/few-shot-learning/dataset/DomainNet/{params.cross_domain}/novel']
 
     else:
         base_file = configs.data_dir[params.dataset] + 'base.json' 
@@ -115,10 +144,15 @@ if __name__=='__main__':
 
     if params.method in ['baseline', 'baseline++'] :
         base_datamgr    = SimpleDataManager(image_size, batch_size = 128)
-        base_loader     = base_datamgr.get_data_loader( data_folder=base_folder, aug = params.train_aug )
+        base_loader     = base_datamgr.get_data_loader( data_folder=base_folder, aug=params.train_aug)
         few_shot_params = dict(n_way=params.test_n_way, n_support=params.n_shot)
         val_datamgr = SetDataManager(image_size, n_query = 15, n_episode=params.n_episode, **few_shot_params)
         val_loader = val_datamgr.get_data_loader(data_folder=val_folder, aug=False)
+        if params.cross_domain and params.ad_align > 0:
+            unlabeled_datamgr = SimpleDataManager(image_size, batch_size = 128)
+            unlabeled_loader = unlabeled_datamgr.get_data_loader(data_folder=unlabeled_folder, aug=params.train_aug,
+                                                                 proportion=params.unlabeled_proportion)
+            base_loader = [base_loader, unlabeled_loader]
         
         if params.dataset == 'omniglot':
             assert params.num_classes >= 4112, 'class number need to be larger than max label id in base class'
@@ -126,15 +160,17 @@ if __name__=='__main__':
             assert params.num_classes >= 1597, 'class number need to be larger than max label id in base class'
 
         if params.method == 'baseline':
-            model           = BaselineTrain( model_dict[params.model], params.num_classes)
+            model           = BaselineTrain( model_dict[params.model], params.num_classes,
+                                             ad_align=params.ad_align, ad_loss_weight=params.ad_loss_weight)
         elif params.method == 'baseline++':
-            model           = BaselineTrain( model_dict[params.model], params.num_classes, loss_type = 'dist')
+            model           = BaselineTrain( model_dict[params.model], params.num_classes, loss_type = 'dist',
+                                             ad_align=params.ad_align, ad_loss_weight=params.ad_loss_weight)
 
     elif params.method in ['protonet','matchingnet','relationnet', 'relationnet_softmax', 'maml', 'maml_approx']:
         n_query = max(1, int(15* params.test_n_way/params.train_n_way)) #if test_n_way is smaller than train_n_way, reduce n_query to keep batch size small
  
         train_few_shot_params    = dict(n_way = params.train_n_way, n_support = params.n_shot) 
-        base_datamgr            = SetDataManager(image_size, n_query = n_query,  **train_few_shot_params)
+        base_datamgr            = SetDataManager(image_size, n_query = n_query, **train_few_shot_params)
         base_loader             = base_datamgr.get_data_loader( data_folder=base_folder, aug=params.train_aug, fix_seed=False)
          
         test_few_shot_params     = dict(n_way = params.test_n_way, n_support = params.n_shot) 
@@ -194,7 +230,7 @@ if __name__=='__main__':
         stop_epoch = params.stop_epoch * model.n_task #maml use multiple tasks in one update 
 
     if params.resume:
-        resume_file = get_resume_file(params.checkpoint_dir)
+        resume_file = get_resume_file(params.checkpoint_dir, save_iter=params.save_iter)
         if resume_file is not None:
             tmp = torch.load(resume_file)
             start_epoch = tmp['epoch']+1
@@ -218,4 +254,7 @@ if __name__=='__main__':
         else:
             raise ValueError('No warm_up file')
 
-    model = train(base_loader, val_loader,  model, optimization, start_epoch, stop_epoch, params)
+    if not params.test:
+        model = train(base_loader, val_loader,  model, optimization, start_epoch, stop_epoch, params)
+    else:
+        test(val_loader, model, params)
