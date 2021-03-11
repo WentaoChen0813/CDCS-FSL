@@ -126,8 +126,8 @@ class BaselineTrain(nn.Module):
         for i, (x,y) in enumerate(train_loader):
             if self.pseudo_align:
                 pseudo_idx = y < 0
-                y[pseudo_idx] = -(y[pseudo_idx] + 1)
                 real_idx = y >= 0
+                y[pseudo_idx] = -(y[pseudo_idx] + 1)
                 n_real = sum(real_idx).item()
             loss, fx = self.forward_loss(x, y)
             avg_loss = avg_loss + loss.item()

@@ -76,9 +76,10 @@ if __name__=='__main__':
     params = parse_args('train')
     # DEBUG
     # params.exp = 'debug'
-    # params.gpu = '1'
+    # params.gpu = '0'
     # params.ad_align = True
     # params.pseudo_align = True
+    # params.batch_size = 64
     # params.momentum = 0.
     os.environ['CUDA_VISIBLE_DEVICES'] = params.gpu
     if params.seed >= 0:
@@ -240,7 +241,7 @@ if __name__=='__main__':
         stop_epoch = params.stop_epoch * model.n_task #maml use multiple tasks in one update
 
     # DEBUG
-    # resume_file = get_resume_file('/mnt/sdb/wentao/few-shot-learning/CloserLookFewShot/checkpoints/DomainNet/ResNet18_baseline++/painting_real_ad_align/',
+    # resume_file = get_resume_file('/mnt/sdb/wentao/few-shot-learning/CloserLookFewShot/checkpoints/DomainNet/ResNet18_baseline++/painting_real_ad_align_pseudo_align/',
     #                               save_iter=50)
     # tmp = torch.load(resume_file)
     # start_epoch = tmp['epoch'] + 1
