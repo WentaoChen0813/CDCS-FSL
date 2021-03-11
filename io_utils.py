@@ -30,10 +30,13 @@ def parse_args(script):
     if script == 'train':
         parser.add_argument('--seed'        , default=0, type=int)
         parser.add_argument('--batch_size'  , default=128, type=int)
-        parser.add_argument('--ad_align'    , action='store_true')
         parser.add_argument('--supervised_align', action='store_true')
+        parser.add_argument('--ad_align'    , action='store_true')
         parser.add_argument('--unlabeled_proportion', default=0.2, type=float)
         parser.add_argument('--ad_loss_weight', default=0.001, type=float)
+        parser.add_argument('--pseudo_align', action='store_true')
+        parser.add_argument('--momentum'    , default=0.6, type=float)
+        parser.add_argument('--threshold'   , default=0.9, type=float)
         parser.add_argument('--num_classes' , default=228, type=int, help='total number of classes in softmax, only used in baseline') #make it larger than the maximum label value in base class
         parser.add_argument('--save_freq'   , default=50, type=int, help='Save frequency')
         parser.add_argument('--start_epoch' , default=0, type=int,help ='Starting epoch')

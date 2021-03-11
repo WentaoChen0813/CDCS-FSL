@@ -46,7 +46,7 @@ class TransformLoader:
 class DataManager:
     @abstractmethod
     def get_data_loader(self, data_file, aug):
-        pass 
+        pass
 
 
 class SimpleDataManager(DataManager):
@@ -60,16 +60,16 @@ class SimpleDataManager(DataManager):
         if data_file is not None:
             dataset = SimpleDataset(data_file, transform)
         elif not isinstance(data_folder, list):
-            dataset = torchvision.datasets.ImageFolder(data_folder, transform)
+            dataset = torchvision.datasets.ImageFolder(data_folder, transform, target_transform=torch.tensor)
         else:
             dataset = []
             for folder in data_folder:
-                dataset.append(torchvision.datasets.ImageFolder(folder, transform))
+                dataset.append(torchvision.datasets.ImageFolder(folder, transform, target_transform=torch.tensor))
             dataset = torch.utils.data.ConcatDataset(dataset)
         if proportion < 1:
             n_samples = int(len(dataset) * proportion)
             dataset = torch.utils.data.random_split(dataset, [n_samples, len(dataset)-n_samples])[0]
-        data_loader_params = dict(batch_size = self.batch_size, shuffle = True, num_workers = 12, pin_memory = True)       
+        data_loader_params = dict(batch_size = self.batch_size, shuffle = True, num_workers = 12)
         data_loader = torch.utils.data.DataLoader(dataset, **data_loader_params)
 
         return data_loader

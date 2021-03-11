@@ -2,6 +2,7 @@ import backbone
 import utils
 from tqdm import tqdm
 from sklearn.linear_model import LogisticRegression
+import copy
 
 import torch
 import torch.nn as nn
@@ -10,7 +11,8 @@ import numpy as np
 import torch.nn.functional as F
 
 class BaselineTrain(nn.Module):
-    def __init__(self, model_func, num_class, loss_type = 'softmax', ad_align=False, ad_loss_weight=0.001):
+    def __init__(self, model_func, num_class, loss_type = 'softmax', ad_align=False, ad_loss_weight=0.001,
+                 pseudo_align=False, momentum=0.6, threshold=0.9):
         super(BaselineTrain, self).__init__()
         self.feature    = model_func()
         if loss_type == 'softmax':
@@ -33,13 +35,42 @@ class BaselineTrain(nn.Module):
                 nn.LeakyReLU(0.2),
                 nn.Linear(feat_dim//4, 2)
             )
+        self.pseudo_align = pseudo_align
+        if pseudo_align:
+            self.momentum = momentum
+            self.threshold = threshold
+            self.teacher_feature = model_func()
+            if loss_type == 'softmax':
+                self.teacher_classifier = nn.Linear(self.feature.final_feat_dim, num_class)
+                self.teacher_classifier.bias.data.fill_(0)
+            elif loss_type == 'dist':  # Baseline ++
+                self.teacher_classifier = backbone.distLinear(self.feature.final_feat_dim, num_class)
+            for param_t, param_s in zip(self.teacher_feature.parameters(), self.feature.parameters()):
+                param_t.data.copy_(param_s.data)
+                param_t.requires_grad = False
+            for param_t, param_s in zip(self.teacher_classifier.parameters(), self.classifier.parameters()):
+                param_t.data.copy_(param_s.data)
+                param_t.requires_grad = False
 
+    def update_teacher(self):
+        for param_t, param_s in zip(self.teacher_feature.parameters(), self.feature.parameters()):
+            param_t.data = self.momentum * param_t.data + (1-self.momentum) * param_s.data
+        for param_t, param_s in zip(self.teacher_classifier.parameters(), self.classifier.parameters()):
+            param_t.data = self.momentum * param_t.data + (1 - self.momentum) * param_s.data
 
     def forward(self,x):
         x    = x.cuda()
         out  = self.feature.forward(x)
         scores  = self.classifier.forward(out)
         return scores
+
+    def teacher_forward(self, x):
+        x = x.cuda()
+        x = self.teacher_feature(x)
+        x = self.teacher_classifier(x)
+        x = F.softmax(x, dim=-1)
+        max_prob, pred = x.max(dim=-1)
+        return max_prob.cpu(), pred.cpu()
 
     def forward_loss(self, x, y):
         x = x.cuda()
@@ -48,7 +79,6 @@ class BaselineTrain(nn.Module):
         y = y.cuda()
         return self.loss_fn(scores, y ), feature
 
-
     def discriminator_loss(self, x, y, is_feature=False):
         if not is_feature:
             x = x.cuda()
@@ -56,6 +86,31 @@ class BaselineTrain(nn.Module):
         pred = self.discriminator(x)
         y = torch.ones(pred.shape[0], dtype=torch.long).cuda() * y
         return self.loss_fn(pred, y), x
+
+    def get_pseudo_samples(self, train_loader):
+        with torch.no_grad():
+            train_loader, unlabeled_loader = train_loader
+            selected_x = []
+            selected_y = []
+            for x, _ in unlabeled_loader:
+                prob, pred = self.teacher_forward(x)
+                idx = prob > self.threshold
+                selected_x.append(x[idx])
+                selected_y.append(pred[idx])
+            selected_x = torch.cat(selected_x)
+            selected_y = torch.cat(selected_y)
+            if len(selected_y) > 0:
+                n_pseudo = len(selected_y)
+                n_total = len(unlabeled_loader.dataset)
+                print(f'Select {n_pseudo} ({100.0*n_pseudo/n_total:.2f}%) pesudo samples')
+                pseudo_dataset = torch.utils.data.TensorDataset(selected_x, selected_y)
+                labeled_dataset = train_loader.dataset
+                new_dataset = torch.utils.data.ConcatDataset([labeled_dataset, pseudo_dataset])
+                train_loader = torch.utils.data.DataLoader(new_dataset,
+                                                           batch_size=train_loader.batch_size,
+                                                           shuffle=True,
+                                                           num_workers=12)
+            return train_loader, unlabeled_loader
     
     def train_loop(self, epoch, train_loader, optimizer):
         print_freq = 10
@@ -101,6 +156,10 @@ class BaselineTrain(nn.Module):
                 else:
                     print('Epoch {:d} | Batch {:d}/{:d} | Loss {:f} | Ad_loss {:f} | Discriminator_loss {:f}'.format(
                         epoch, i, len(train_loader), avg_loss/(i+1), avg_ad_loss/(i+1), avg_discriminator_loss/(i+1)))
+
+            if self.pseudo_align:
+                self.update_teacher()
+
         if not self.ad_align:
             return avg_loss / (i+1)
         else:

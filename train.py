@@ -41,6 +41,7 @@ def train(base_loader, val_loader, model, optimization, start_epoch, stop_epoch,
         optimizer = [base_optimizer, discriminator_optimizer]
 
     max_acc = 0
+    ori_base_loader = base_loader
     for epoch in range(start_epoch,stop_epoch):
         model.train()
         end = time.time()
@@ -65,15 +66,20 @@ def train(base_loader, val_loader, model, optimization, start_epoch, stop_epoch,
             outfile = os.path.join(params.checkpoint_dir, '{:d}.tar'.format(epoch))
             torch.save({'epoch':epoch, 'state':model.state_dict()}, outfile)
 
+        if params.pseudo_align:
+            model.train()
+            base_loader = model.get_pseudo_samples(ori_base_loader)
+
     return model
 
 if __name__=='__main__':
     params = parse_args('train')
-    #dubug
-    # params.exp = 'painting_real_ad_align'
+    # DEBUG
+    # params.exp = 'debug'
+    # params.gpu = '1'
     # params.ad_align = True
-    # params.resume = True
-    # params.save_iter = 50
+    # params.pseudo_align = True
+    # params.momentum = 0.
     os.environ['CUDA_VISIBLE_DEVICES'] = params.gpu
     if params.seed >= 0:
         np.random.seed(params.seed)
@@ -143,13 +149,13 @@ if __name__=='__main__':
      
 
     if params.method in ['baseline', 'baseline++'] :
-        base_datamgr    = SimpleDataManager(image_size, batch_size = 128)
+        base_datamgr    = SimpleDataManager(image_size, batch_size = params.batch_size)
         base_loader     = base_datamgr.get_data_loader( data_folder=base_folder, aug=params.train_aug)
         few_shot_params = dict(n_way=params.test_n_way, n_support=params.n_shot)
         val_datamgr = SetDataManager(image_size, n_query = 15, n_episode=params.n_episode, **few_shot_params)
         val_loader = val_datamgr.get_data_loader(data_folder=val_folder, aug=False)
         if params.cross_domain and params.ad_align > 0:
-            unlabeled_datamgr = SimpleDataManager(image_size, batch_size = 128)
+            unlabeled_datamgr = SimpleDataManager(image_size, batch_size = params.batch_size)
             unlabeled_loader = unlabeled_datamgr.get_data_loader(data_folder=unlabeled_folder, aug=params.train_aug,
                                                                  proportion=params.unlabeled_proportion)
             base_loader = [base_loader, unlabeled_loader]
@@ -161,10 +167,14 @@ if __name__=='__main__':
 
         if params.method == 'baseline':
             model           = BaselineTrain( model_dict[params.model], params.num_classes,
-                                             ad_align=params.ad_align, ad_loss_weight=params.ad_loss_weight)
+                                             ad_align=params.ad_align, ad_loss_weight=params.ad_loss_weight,
+                                             pseudo_align=params.pseudo_align, momentum=params.momentum,
+                                             threshold=params.threshold)
         elif params.method == 'baseline++':
             model           = BaselineTrain( model_dict[params.model], params.num_classes, loss_type = 'dist',
-                                             ad_align=params.ad_align, ad_loss_weight=params.ad_loss_weight)
+                                             ad_align=params.ad_align, ad_loss_weight=params.ad_loss_weight,
+                                             pseudo_align=params.pseudo_align, momentum=params.momentum,
+                                             threshold=params.threshold)
 
     elif params.method in ['protonet','matchingnet','relationnet', 'relationnet_softmax', 'maml', 'maml_approx']:
         n_query = max(1, int(15* params.test_n_way/params.train_n_way)) #if test_n_way is smaller than train_n_way, reduce n_query to keep batch size small
@@ -227,7 +237,14 @@ if __name__=='__main__':
     start_epoch = params.start_epoch
     stop_epoch = params.stop_epoch
     if params.method == 'maml' or params.method == 'maml_approx' :
-        stop_epoch = params.stop_epoch * model.n_task #maml use multiple tasks in one update 
+        stop_epoch = params.stop_epoch * model.n_task #maml use multiple tasks in one update
+
+    # DEBUG
+    # resume_file = get_resume_file('/mnt/sdb/wentao/few-shot-learning/CloserLookFewShot/checkpoints/DomainNet/ResNet18_baseline++/painting_real_ad_align/',
+    #                               save_iter=50)
+    # tmp = torch.load(resume_file)
+    # start_epoch = tmp['epoch'] + 1
+    # model.load_state_dict(tmp['state'], strict=False)
 
     if params.resume:
         resume_file = get_resume_file(params.checkpoint_dir, save_iter=params.save_iter)
