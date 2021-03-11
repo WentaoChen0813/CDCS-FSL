@@ -99,6 +99,7 @@ class BaselineTrain(nn.Module):
                 selected_y.append(pred[idx])
             selected_x = torch.cat(selected_x)
             selected_y = torch.cat(selected_y)
+            selected_y = -selected_y - 1
             if len(selected_y) > 0:
                 n_pseudo = len(selected_y)
                 n_total = len(unlabeled_loader.dataset)
@@ -123,6 +124,11 @@ class BaselineTrain(nn.Module):
             n_unlabeled = len(unlabeled_loader)
             optimizer, discriminator_optim = optimizer
         for i, (x,y) in enumerate(train_loader):
+            if self.pseudo_align:
+                pseudo_idx = y < 0
+                y[pseudo_idx] = -(y[pseudo_idx] + 1)
+                real_idx = y >= 0
+                n_real = sum(real_idx).item()
             loss, fx = self.forward_loss(x, y)
             avg_loss = avg_loss + loss.item()
 
@@ -130,6 +136,8 @@ class BaselineTrain(nn.Module):
                 if i % n_unlabeled == 0:
                     unlabeled_iter = iter(unlabeled_loader)
                 ux, _ = next(unlabeled_iter)
+                if self.pseudo_align:
+                    ux = ux[:n_real]
                 ad_loss, fux = self.discriminator_loss(ux, 1)
                 ad_loss *= self.ad_loss_weight
                 avg_ad_loss += ad_loss.item()
@@ -140,6 +148,8 @@ class BaselineTrain(nn.Module):
             optimizer.step()
 
             if self.ad_align:
+                if self.pseudo_align:
+                    fx = fx[real_idx]
                 real_loss, _ = self.discriminator_loss(fx.detach(), 1, is_feature=True)
                 fake_loss, _ = self.discriminator_loss(fux.detach(), 0, is_feature=True)
                 discriminator_loss = (real_loss + fake_loss) / 2
