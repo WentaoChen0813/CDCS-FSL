@@ -45,7 +45,7 @@ def train(base_loader, val_loader, model, optimization, start_epoch, stop_epoch,
     for epoch in range(start_epoch,stop_epoch):
         model.train()
         end = time.time()
-        loss = model.train_loop(epoch, base_loader,  optimizer ) #model are called by reference, no need to return
+        loss = model.train_loop(epoch, base_loader,  optimizer, params) #model are called by reference, no need to return
         print(f'Training time: {time.time() - end:.0f} s')
         if not isinstance(loss, dict):
             params.logger.scalar_summary('train/loss', loss, epoch)
@@ -78,9 +78,12 @@ if __name__=='__main__':
     # params.exp = 'debug'
     # params.gpu = '0'
     # params.ad_align = True
-    # params.pseudo_align = True
+    # params.proto_align = True
     # params.batch_size = 64
-    # params.momentum = 0.
+    # params.resume = True
+    # params.checkpoint = 'checkpoints/DomainNet/ResNet18_baseline++/painting_real_ad_align'
+    # params.save_iter = 50
+
     os.environ['CUDA_VISIBLE_DEVICES'] = params.gpu
     if params.seed >= 0:
         np.random.seed(params.seed)
@@ -155,10 +158,10 @@ if __name__=='__main__':
         few_shot_params = dict(n_way=params.test_n_way, n_support=params.n_shot)
         val_datamgr = SetDataManager(image_size, n_query = 15, n_episode=params.n_episode, **few_shot_params)
         val_loader = val_datamgr.get_data_loader(data_folder=val_folder, aug=False)
-        if params.cross_domain and params.ad_align > 0:
+        if params.cross_domain and params.ad_align:
             unlabeled_datamgr = SimpleDataManager(image_size, batch_size = params.batch_size)
             unlabeled_loader = unlabeled_datamgr.get_data_loader(data_folder=unlabeled_folder, aug=params.train_aug,
-                                                                 proportion=params.unlabeled_proportion)
+                                                                 proportion=params.unlabeled_proportion, with_idx=True)
             base_loader = [base_loader, unlabeled_loader]
         
         if params.dataset == 'omniglot':
@@ -170,12 +173,12 @@ if __name__=='__main__':
             model           = BaselineTrain( model_dict[params.model], params.num_classes,
                                              ad_align=params.ad_align, ad_loss_weight=params.ad_loss_weight,
                                              pseudo_align=params.pseudo_align, momentum=params.momentum,
-                                             threshold=params.threshold)
+                                             threshold=params.threshold, proto_align=params.proto_align)
         elif params.method == 'baseline++':
             model           = BaselineTrain( model_dict[params.model], params.num_classes, loss_type = 'dist',
                                              ad_align=params.ad_align, ad_loss_weight=params.ad_loss_weight,
                                              pseudo_align=params.pseudo_align, momentum=params.momentum,
-                                             threshold=params.threshold)
+                                             threshold=params.threshold, proto_align=params.proto_align)
 
     elif params.method in ['protonet','matchingnet','relationnet', 'relationnet_softmax', 'maml', 'maml_approx']:
         n_query = max(1, int(15* params.test_n_way/params.train_n_way)) #if test_n_way is smaller than train_n_way, reduce n_query to keep batch size small
@@ -248,11 +251,17 @@ if __name__=='__main__':
     # model.load_state_dict(tmp['state'], strict=False)
 
     if params.resume:
-        resume_file = get_resume_file(params.checkpoint_dir, save_iter=params.save_iter)
+        if params.checkpoint:
+            checkpoint_dir = params.checkpoint
+        else:
+            checkpoint_dir = params.checkpoint_dir
+        resume_file = get_resume_file(checkpoint_dir, save_iter=params.save_iter)
         if resume_file is not None:
             tmp = torch.load(resume_file)
             start_epoch = tmp['epoch']+1
-            model.load_state_dict(tmp['state'])
+            model.load_state_dict(tmp['state'], strict=False)
+            if params.proto_align:
+                model.init_teacher()
     elif params.warmup: #We also support warmup from pretrained baseline feature, but we never used in our paper
         baseline_checkpoint_dir = '%s/checkpoints/%s/%s_%s' %(configs.save_dir, params.dataset, params.model, 'baseline')
         if params.train_aug:

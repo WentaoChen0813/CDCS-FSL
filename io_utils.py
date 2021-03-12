@@ -35,18 +35,20 @@ def parse_args(script):
         parser.add_argument('--unlabeled_proportion', default=0.2, type=float)
         parser.add_argument('--ad_loss_weight', default=0.001, type=float)
         parser.add_argument('--pseudo_align', action='store_true')
+        parser.add_argument('--proto_align' , action='store_true')
         parser.add_argument('--momentum'    , default=0.6, type=float)
         parser.add_argument('--threshold'   , default=0.9, type=float)
         parser.add_argument('--num_classes' , default=228, type=int, help='total number of classes in softmax, only used in baseline') #make it larger than the maximum label value in base class
         parser.add_argument('--save_freq'   , default=50, type=int, help='Save frequency')
         parser.add_argument('--start_epoch' , default=0, type=int,help ='Starting epoch')
         parser.add_argument('--stop_epoch'  , default=100, type=int, help ='Stopping epoch') #for meta-learning methods, each epoch contains 100 episodes. The default epoch number is dataset dependent. See train.py
-        parser.add_argument('--resume'      , action='store_true', help='continue from previous trained model with largest epoch')
         parser.add_argument('--warmup'      , action='store_true', help='continue from baseline, neglected if resume is true') #never used in the paper
         # test
         parser.add_argument('--test', action='store_true')
         parser.add_argument('--n_episode', default=100, type=int)
         parser.add_argument('--split', default='novel',            help='base/val/novel')  # default novel, but you can also test base/val class accuracy if you want
+        parser.add_argument('--resume', action='store_true',       help='continue from previous trained model with largest epoch')
+        parser.add_argument('--checkpoint', default='')
         parser.add_argument('--save_iter', default=-1, type=int,   help='saved feature from the model trained in x epoch, use the best model if x is -1')
         parser.add_argument('--adaptation', action='store_true',   help='further adaptation in test time or not')
     elif script == 'save_features':

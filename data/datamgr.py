@@ -49,22 +49,44 @@ class DataManager:
         pass
 
 
+def dataset_with_indices(cls):
+    """
+    Modifies the given Dataset class to return a tuple data, target, index
+    instead of just data, target.
+    """
+
+    def __getitem__(self, index):
+        data, target = cls.__getitem__(self, index)
+        return data, target, index
+
+    return type(cls.__name__, (cls,), {
+        '__getitem__': __getitem__,
+    })
+ImageFolder = dataset_with_indices(torchvision.datasets.ImageFolder)
+
+
 class SimpleDataManager(DataManager):
     def __init__(self, image_size, batch_size):        
         super(SimpleDataManager, self).__init__()
         self.batch_size = batch_size
         self.trans_loader = TransformLoader(image_size)
 
-    def get_data_loader(self, data_file=None, data_folder=None, aug=None, proportion=1): #parameters that would change on train/val set
+    def get_data_loader(self, data_file=None, data_folder=None, aug=None, proportion=1, with_idx=False): #parameters that would change on train/val set
         transform = self.trans_loader.get_composed_transform(aug)
         if data_file is not None:
             dataset = SimpleDataset(data_file, transform)
         elif not isinstance(data_folder, list):
-            dataset = torchvision.datasets.ImageFolder(data_folder, transform, target_transform=torch.tensor)
+            if with_idx:
+                dataset = ImageFolder(data_folder, transform)
+            else:
+                dataset = torchvision.datasets.ImageFolder(data_folder, transform)
         else:
             dataset = []
             for folder in data_folder:
-                dataset.append(torchvision.datasets.ImageFolder(folder, transform, target_transform=torch.tensor))
+                if with_idx:
+                    dataset.append(ImageFolder(folder, transform))
+                else:
+                    dataset.append(torchvision.datasets.ImageFolder(folder, transform))
             dataset = torch.utils.data.ConcatDataset(dataset)
         if proportion < 1:
             n_samples = int(len(dataset) * proportion)

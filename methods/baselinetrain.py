@@ -1,4 +1,6 @@
 import backbone
+from data.dataset import PseudoPairedSetDataset, EpisodicBatchSampler
+from methods.protonet import euclidean_dist
 import utils
 from tqdm import tqdm
 from sklearn.linear_model import LogisticRegression
@@ -12,7 +14,7 @@ import torch.nn.functional as F
 
 class BaselineTrain(nn.Module):
     def __init__(self, model_func, num_class, loss_type = 'softmax', ad_align=False, ad_loss_weight=0.001,
-                 pseudo_align=False, momentum=0.6, threshold=0.9):
+                 pseudo_align=False, momentum=0.6, threshold=0.9, proto_align=False):
         super(BaselineTrain, self).__init__()
         self.feature    = model_func()
         if loss_type == 'softmax':
@@ -36,7 +38,8 @@ class BaselineTrain(nn.Module):
                 nn.Linear(feat_dim//4, 2)
             )
         self.pseudo_align = pseudo_align
-        if pseudo_align:
+        self.proto_align = proto_align
+        if pseudo_align or proto_align:
             self.momentum = momentum
             self.threshold = threshold
             self.teacher_feature = model_func()
@@ -45,12 +48,15 @@ class BaselineTrain(nn.Module):
                 self.teacher_classifier.bias.data.fill_(0)
             elif loss_type == 'dist':  # Baseline ++
                 self.teacher_classifier = backbone.distLinear(self.feature.final_feat_dim, num_class)
-            for param_t, param_s in zip(self.teacher_feature.parameters(), self.feature.parameters()):
-                param_t.data.copy_(param_s.data)
-                param_t.requires_grad = False
-            for param_t, param_s in zip(self.teacher_classifier.parameters(), self.classifier.parameters()):
-                param_t.data.copy_(param_s.data)
-                param_t.requires_grad = False
+            self.init_teacher()
+
+    def init_teacher(self):
+        for param_t, param_s in zip(self.teacher_feature.parameters(), self.feature.parameters()):
+            param_t.data.copy_(param_s.data)
+            param_t.requires_grad = False
+        for param_t, param_s in zip(self.teacher_classifier.parameters(), self.classifier.parameters()):
+            param_t.data.copy_(param_s.data)
+            param_t.requires_grad = False
 
     def update_teacher(self):
         for param_t, param_s in zip(self.teacher_feature.parameters(), self.feature.parameters()):
@@ -112,17 +118,44 @@ class BaselineTrain(nn.Module):
                                                            shuffle=True,
                                                            num_workers=12)
             return train_loader, unlabeled_loader
+
+    def get_pseudo_paired_samples(self, train_loader, unlabeled_loader, params):
+        with torch.no_grad():
+            selected_idx = []
+            selected_pred = []
+            for x, _, idx in unlabeled_loader:
+                prob, pred = self.teacher_forward(x)
+                selected = prob > self.threshold
+                selected_idx.append(idx[selected])
+                selected_pred.append(pred[selected])
+            selected_idx = torch.cat(selected_idx).detach().cpu().numpy()
+            selected_pred = torch.cat(selected_pred).detach().cpu().numpy()
+            paired_dataset = PseudoPairedSetDataset(train_loader.dataset, unlabeled_loader.dataset,
+                                                    selected_idx, selected_pred, n_shot=params.n_shot, n_query=15)
+            sampler = EpisodicBatchSampler(len(paired_dataset), params.train_n_way, n_episodes=10000, fix_seed=False)
+            data_loader_params = dict(batch_sampler=sampler, num_workers=12, pin_memory=False)
+            paired_loader = torch.utils.data.DataLoader(paired_dataset, **data_loader_params)
+            n_pseudo = len(selected_pred)
+            n_total = len(unlabeled_loader.dataset)
+            n_class = len(np.unique(selected_pred))
+            print(f'Select {n_pseudo} ({100.0 * n_pseudo / n_total:.2f}%) pesudo samples, {n_class} pseudo classes')
+            return paired_loader
     
-    def train_loop(self, epoch, train_loader, optimizer):
+    def train_loop(self, epoch, train_loader, optimizer, params=None):
         print_freq = 10
         avg_loss=0
         avg_ad_loss = 0
         avg_discriminator_loss = 0
+        avg_proto_loss = 0
 
         if self.ad_align:
             train_loader, unlabeled_loader = train_loader
             n_unlabeled = len(unlabeled_loader)
             optimizer, discriminator_optim = optimizer
+            if self.proto_align:
+                paired_loader = self.get_pseudo_paired_samples(train_loader, unlabeled_loader, params)
+                paired_iter = iter(paired_loader)
+
         for i, (x,y) in enumerate(train_loader):
             if self.pseudo_align:
                 pseudo_idx = y < 0
@@ -135,13 +168,30 @@ class BaselineTrain(nn.Module):
             if self.ad_align:
                 if i % n_unlabeled == 0:
                     unlabeled_iter = iter(unlabeled_loader)
-                ux, _ = next(unlabeled_iter)
+                ux, *_ = next(unlabeled_iter)
                 if self.pseudo_align:
                     ux = ux[:n_real]
                 ad_loss, fux = self.discriminator_loss(ux, 1)
                 ad_loss *= self.ad_loss_weight
                 avg_ad_loss += ad_loss.item()
-                loss += avg_ad_loss
+                loss += ad_loss
+
+            if self.proto_align:
+                sqx, _ = next(paired_iter)
+                n_way = params.train_n_way
+                n_shot = params.n_shot
+                n_query = sqx.shape[1] - n_shot
+                sqx = sqx.view(-1, *sqx.shape[2:]).cuda()
+                sqfx = self.feature(sqx)
+                sqfx = sqfx.view(n_way, n_shot+n_query, -1)
+                sfx, qfx = sqfx[:, :n_shot], sqfx[:, n_shot:]
+                proto = sfx.mean(dim=1)
+                qfx = qfx.contiguous().view(n_way*n_query, -1)
+                score = -euclidean_dist(qfx, proto)
+                qy = torch.arange(n_way).unsqueeze(-1).repeat(1, n_query).view(-1).cuda()
+                proto_loss = self.loss_fn(score, qy)
+                avg_proto_loss += proto_loss.item()
+                loss += proto_loss
 
             optimizer.zero_grad()
             loss.backward()
@@ -163,19 +213,27 @@ class BaselineTrain(nn.Module):
                 #print(optimizer.state_dict()['param_groups'][0]['lr'])
                 if not self.ad_align:
                     print('Epoch {:d} | Batch {:d}/{:d} | Loss {:f}'.format(epoch, i, len(train_loader), avg_loss/float(i+1)  ))
-                else:
+                elif not self.proto_align:
                     print('Epoch {:d} | Batch {:d}/{:d} | Loss {:f} | Ad_loss {:f} | Discriminator_loss {:f}'.format(
                         epoch, i, len(train_loader), avg_loss/(i+1), avg_ad_loss/(i+1), avg_discriminator_loss/(i+1)))
+                else:
+                    print('Epoch {:d} | Batch {:d}/{:d} | Loss {:f} | Proto_loss {:f} | Ad_loss {:f} | Discriminator_loss {:f}'.format(
+                        epoch, i, len(train_loader), avg_loss / (i + 1), avg_proto_loss/(i+1), avg_ad_loss / (i + 1), avg_discriminator_loss / (i + 1)))
 
-            if self.pseudo_align:
+            if self.pseudo_align or self.proto_align:
                 self.update_teacher()
 
         if not self.ad_align:
             return avg_loss / (i+1)
-        else:
+        elif not self.proto_align:
             return {'loss': avg_loss/(i+1),
                     'ad_loss': avg_ad_loss/(i+1),
                     'discriminator_loss': avg_discriminator_loss/(i+1)}
+        else:
+            return {'loss': avg_loss / (i + 1),
+                    'proto_loss': avg_proto_loss / (i + 1),
+                    'ad_loss': avg_ad_loss / (i + 1),
+                    'discriminator_loss': avg_discriminator_loss / (i + 1)}
                      
     def test_loop(self, epoch, val_loader, params):
         # if self.DBval:
