@@ -124,27 +124,28 @@ class SetDataset:
         return self.sample_number
 
 
+class DatasetWithoutIndex:
+    def __init__(self, dataset):
+        self.dataset = dataset
+
+    def __getitem__(self, index):
+        img, label, _ = self.dataset[index]
+        return img, label
+
+    def __len__(self):
+        return len(self.dataset)
+
+
 class PseudoPairedSetDataset:
     def __init__(self, labeled_dataset, unlabeled_dataset, selected_idx, selected_pred, n_shot, n_query):
         self.n_shot = n_shot
         self.n_query = n_query
-        support_dataset = unlabeled_dataset
+        support_dataset = DatasetWithoutIndex(unlabeled_dataset)
         query_dataset = labeled_dataset
-        self.sub_support_meta = {}
         self.sub_query_meta = {}
         self.cl_list = np.unique(selected_pred)
         for cl in self.cl_list:
-            self.sub_support_meta[cl] = []
             self.sub_query_meta[cl] = []
-        for i, idx in enumerate(selected_idx):
-            y = selected_pred[i]
-            idx_dataset = 0
-            idx_sample = idx
-            while idx >= support_dataset.dataset.cumulative_sizes[idx_dataset]:
-                idx_sample = idx - support_dataset.cumulative_size[idx_dataset]
-                idx_dataset += 1
-            x = support_dataset.dataset.datasets[idx_dataset].imgs[idx_sample][0]
-            self.sub_support_meta[y].append(x)
         for x, y in query_dataset.imgs:
             if y in self.cl_list:
                 self.sub_query_meta[y].append(x)
@@ -161,7 +162,8 @@ class PseudoPairedSetDataset:
                                        pin_memory=False,
                                        drop_last=False)
         for cl in self.cl_list:
-            sub_support_dataset = SubDataset(self.sub_support_meta[cl], cl, transform=support_dataset.dataset.datasets[0].transform)
+            sub_idx = selected_idx[selected_pred == cl]
+            sub_support_dataset = torch.utils.data.Subset(support_dataset, sub_idx)
             self.sub_support_dataloader.append(
                 torch.utils.data.DataLoader(sub_support_dataset, **support_dataloader_params))
             sub_query_dataset = SubDataset(self.sub_query_meta[cl], cl, transform=query_dataset.transform)

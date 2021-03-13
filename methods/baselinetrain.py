@@ -96,21 +96,35 @@ class BaselineTrain(nn.Module):
     def get_pseudo_samples(self, train_loader):
         with torch.no_grad():
             train_loader, unlabeled_loader = train_loader
-            selected_x = []
             selected_y = []
-            for x, _ in unlabeled_loader:
+            selected_idx = []
+            for x, _, idx in unlabeled_loader:
                 prob, pred = self.teacher_forward(x)
-                idx = prob > self.threshold
-                selected_x.append(x[idx])
-                selected_y.append(pred[idx])
-            selected_x = torch.cat(selected_x)
-            selected_y = torch.cat(selected_y)
-            selected_y = -selected_y - 1
+                selected_idx.append(idx[prob > self.threshold])
+                selected_y.append(pred[prob > self.threshold])
+            selected_idx = torch.cat(selected_idx).detach().cpu().numpy()
+            selected_y = torch.cat(selected_y).detach().cpu().numpy()
+
+            class NewDataset:
+                def __init__(self, dataset, label):
+                    self.dataset = dataset
+                    self.label = label
+
+                def __getitem__(self, index):
+                    data, *_ = self.dataset[index]
+                    label = self.label[index]
+                    label = -label - 1
+                    return data, label
+
+                def __len__(self):
+                    return len(self.dataset)
+
             if len(selected_y) > 0:
                 n_pseudo = len(selected_y)
                 n_total = len(unlabeled_loader.dataset)
                 print(f'Select {n_pseudo} ({100.0*n_pseudo/n_total:.2f}%) pesudo samples')
-                pseudo_dataset = torch.utils.data.TensorDataset(selected_x, selected_y)
+                pseudo_dataset = torch.utils.data.Subset(unlabeled_loader.dataset, selected_idx)
+                pseudo_dataset = NewDataset(pseudo_dataset, selected_y)
                 labeled_dataset = train_loader.dataset
                 new_dataset = torch.utils.data.ConcatDataset([labeled_dataset, pseudo_dataset])
                 train_loader = torch.utils.data.DataLoader(new_dataset,

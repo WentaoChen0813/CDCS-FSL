@@ -49,20 +49,16 @@ class DataManager:
         pass
 
 
-def dataset_with_indices(cls):
-    """
-    Modifies the given Dataset class to return a tuple data, target, index
-    instead of just data, target.
-    """
+class DatasetWithIndex:
+    def __init__(self, dataset):
+        self.dataset = dataset
 
     def __getitem__(self, index):
-        data, target = cls.__getitem__(self, index)
-        return data, target, index
+        img, label = self.dataset[index]
+        return img, label, index
 
-    return type(cls.__name__, (cls,), {
-        '__getitem__': __getitem__,
-    })
-ImageFolder = dataset_with_indices(torchvision.datasets.ImageFolder)
+    def __len__(self):
+        return len(self.dataset)
 
 
 class SimpleDataManager(DataManager):
@@ -76,21 +72,17 @@ class SimpleDataManager(DataManager):
         if data_file is not None:
             dataset = SimpleDataset(data_file, transform)
         elif not isinstance(data_folder, list):
-            if with_idx:
-                dataset = ImageFolder(data_folder, transform)
-            else:
-                dataset = torchvision.datasets.ImageFolder(data_folder, transform)
+            dataset = torchvision.datasets.ImageFolder(data_folder, transform)
         else:
             dataset = []
             for folder in data_folder:
-                if with_idx:
-                    dataset.append(ImageFolder(folder, transform))
-                else:
-                    dataset.append(torchvision.datasets.ImageFolder(folder, transform))
+                dataset.append(torchvision.datasets.ImageFolder(folder, transform))
             dataset = torch.utils.data.ConcatDataset(dataset)
         if proportion < 1:
             n_samples = int(len(dataset) * proportion)
             dataset = torch.utils.data.random_split(dataset, [n_samples, len(dataset)-n_samples])[0]
+        if with_idx:
+            dataset = DatasetWithIndex(dataset)
         data_loader_params = dict(batch_size = self.batch_size, shuffle = True, num_workers = 12)
         data_loader = torch.utils.data.DataLoader(dataset, **data_loader_params)
 

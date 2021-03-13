@@ -76,10 +76,10 @@ if __name__=='__main__':
     params = parse_args('train')
     # DEBUG
     # params.exp = 'debug'
-    # params.gpu = '0'
+    # params.gpu = '1'
     # params.ad_align = True
     # params.proto_align = True
-    # params.batch_size = 64
+    # params.batch_size = 128
     # params.resume = True
     # params.checkpoint = 'checkpoints/DomainNet/ResNet18_baseline++/painting_real_ad_align'
     # params.save_iter = 50
