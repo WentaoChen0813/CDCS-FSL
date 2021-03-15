@@ -130,7 +130,8 @@ class BaselineTrain(nn.Module):
                 train_loader = torch.utils.data.DataLoader(new_dataset,
                                                            batch_size=train_loader.batch_size,
                                                            shuffle=True,
-                                                           num_workers=12)
+                                                           num_workers=12,
+                                                           drop_last=True)
             return train_loader, unlabeled_loader
 
     def get_pseudo_paired_samples(self, train_loader, unlabeled_loader, params):
