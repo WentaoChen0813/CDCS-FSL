@@ -11,10 +11,11 @@ import torch.nn as nn
 from torch.autograd import Variable
 import numpy as np
 import torch.nn.functional as F
+import torchvision
 
 class BaselineTrain(nn.Module):
     def __init__(self, model_func, num_class, loss_type = 'softmax', ad_align=False, ad_loss_weight=0.001,
-                 pseudo_align=False, momentum=0.6, threshold=0.9, proto_align=False):
+                 pseudo_align=False, momentum=0.6, threshold=0.9, proto_align=False, ada_proto=False):
         super(BaselineTrain, self).__init__()
         self.feature    = model_func()
         if loss_type == 'softmax':
@@ -49,6 +50,18 @@ class BaselineTrain(nn.Module):
             elif loss_type == 'dist':  # Baseline ++
                 self.teacher_classifier = backbone.distLinear(self.feature.final_feat_dim, num_class)
             self.init_teacher()
+        self.ada_proto = ada_proto
+        if ada_proto:
+            self.weight_predictor = torch.nn.Sequential(
+                nn.Linear(num_class, 256),
+                nn.BatchNorm1d(256),
+                nn.ReLU(),
+                nn.Linear(256, 256),
+                nn.BatchNorm1d(256),
+                nn.ReLU(),
+                nn.Linear(256, 1)
+            )
+
 
     def init_teacher(self):
         for param_t, param_s in zip(self.teacher_feature.parameters(), self.feature.parameters()):
@@ -138,11 +151,16 @@ class BaselineTrain(nn.Module):
         with torch.no_grad():
             selected_idx = []
             selected_pred = []
-            for x, _, idx in unlabeled_loader:
-                prob, pred = self.teacher_forward(x)
-                selected = prob > self.threshold
-                selected_idx.append(idx[selected])
-                selected_pred.append(pred[selected])
+            for x, y, idx in unlabeled_loader:
+                if params.gt_proto:
+                    selected = y < self.num_class
+                    selected_idx.append(idx[selected])
+                    selected_pred.append(y[selected])
+                else:
+                    prob, pred = self.teacher_forward(x)
+                    selected = prob > self.threshold
+                    selected_idx.append(idx[selected])
+                    selected_pred.append(pred[selected])
             selected_idx = torch.cat(selected_idx).detach().cpu().numpy()
             selected_pred = torch.cat(selected_pred).detach().cpu().numpy()
             paired_dataset = PseudoPairedSetDataset(train_loader.dataset, unlabeled_loader.dataset,
@@ -200,7 +218,24 @@ class BaselineTrain(nn.Module):
                 sqfx = self.feature(sqx)
                 sqfx = sqfx.view(n_way, n_shot+n_query, -1)
                 sfx, qfx = sqfx[:, :n_shot], sqfx[:, n_shot:]
-                proto = sfx.mean(dim=1)
+                if self.ada_proto:
+                    sfx = sfx.contiguous().view(n_way * n_shot, -1)
+                    score = self.classifier(sfx)
+                    weight = self.weight_predictor(score)
+                    weight = weight.view(n_way, n_shot)
+                    weight = F.softmax(weight, dim=-1)
+                    sfx = sfx.view(n_way, n_shot, -1)
+                    proto = (sfx * weight.unsqueeze(-1)).sum(dim=1)
+                elif params.weight_proto:
+                    sx = sqx.view(n_way, n_shot+n_query, *sqx.shape[1:])[:, :n_shot]
+                    sx = sx.contiguous().view(n_way*n_shot, *sx.shape[2:])
+                    with torch.no_grad():
+                        weight, _ = self.teacher_forward(sx)
+                        weight = weight.view(n_way, n_shot).cuda()
+                        weight = weight / (weight.sum(dim=-1, keepdim=True) + 1e-6)
+                    proto = (sfx * weight.unsqueeze(-1)).sum(dim=1)
+                else:
+                    proto = sfx.mean(dim=1)
                 qfx = qfx.contiguous().view(n_way*n_query, -1)
                 score = -euclidean_dist(qfx, proto)
                 qy = torch.arange(n_way).unsqueeze(-1).repeat(1, n_query).view(-1).cuda()

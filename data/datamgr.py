@@ -74,9 +74,18 @@ class SimpleDataManager(DataManager):
         elif not isinstance(data_folder, list):
             dataset = torchvision.datasets.ImageFolder(data_folder, transform)
         else:
+            class AddLabel:
+                def __init__(self, base):
+                    self.base = base
+                def __call__(self, label):
+                    return label + self.base
             dataset = []
+            n_class = 0
             for folder in data_folder:
-                dataset.append(torchvision.datasets.ImageFolder(folder, transform))
+                target_transform = AddLabel(n_class)
+                dataset.append(torchvision.datasets.ImageFolder(folder, transform, target_transform))
+                n_class += len(dataset[-1].classes)
+
             dataset = torch.utils.data.ConcatDataset(dataset)
         if proportion < 1:
             n_samples = int(len(dataset) * proportion)

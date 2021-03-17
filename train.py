@@ -76,9 +76,10 @@ if __name__=='__main__':
     params = parse_args('train')
     # DEBUG
     # params.exp = 'debug'
-    # params.gpu = '1'
+    # params.gpu = '0'
     # params.ad_align = True
     # params.proto_align = True
+    # params.ada_proto = True
     # params.batch_size = 128
     # params.resume = True
     # params.checkpoint = 'checkpoints/DomainNet/ResNet18_baseline++/painting_real_ad_align'
@@ -173,12 +174,14 @@ if __name__=='__main__':
             model           = BaselineTrain( model_dict[params.model], params.num_classes,
                                              ad_align=params.ad_align, ad_loss_weight=params.ad_loss_weight,
                                              pseudo_align=params.pseudo_align, momentum=params.momentum,
-                                             threshold=params.threshold, proto_align=params.proto_align)
+                                             threshold=params.threshold, proto_align=params.proto_align,
+                                             ada_proto=params.ada_proto)
         elif params.method == 'baseline++':
             model           = BaselineTrain( model_dict[params.model], params.num_classes, loss_type = 'dist',
                                              ad_align=params.ad_align, ad_loss_weight=params.ad_loss_weight,
                                              pseudo_align=params.pseudo_align, momentum=params.momentum,
-                                             threshold=params.threshold, proto_align=params.proto_align)
+                                             threshold=params.threshold, proto_align=params.proto_align,
+                                             ada_proto=params.ada_proto)
 
     elif params.method in ['protonet','matchingnet','relationnet', 'relationnet_softmax', 'maml', 'maml_approx']:
         n_query = max(1, int(15* params.test_n_way/params.train_n_way)) #if test_n_way is smaller than train_n_way, reduce n_query to keep batch size small

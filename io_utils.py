@@ -36,6 +36,9 @@ def parse_args(script):
         parser.add_argument('--ad_loss_weight', default=0.001, type=float)
         parser.add_argument('--pseudo_align', action='store_true')
         parser.add_argument('--proto_align' , action='store_true')
+        parser.add_argument('--gt_proto'    , action='store_true')
+        parser.add_argument('--weight_proto', action='store_true')
+        parser.add_argument('--ada_proto'   , action='store_true')
         parser.add_argument('--momentum'    , default=0.6, type=float)
         parser.add_argument('--threshold'   , default=0.9, type=float)
         parser.add_argument('--num_classes' , default=228, type=int, help='total number of classes in softmax, only used in baseline') #make it larger than the maximum label value in base class
