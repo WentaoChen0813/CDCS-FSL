@@ -7,6 +7,7 @@ import json
 import numpy as np
 import torchvision.transforms as transforms
 import os
+import random
 
 
 identity = lambda x:x
@@ -124,6 +125,83 @@ class SetDataset:
         return self.sample_number
 
 
+class EpisodeDataset:
+    def __init__(self, data_folder, transform, n_way, n_support, n_query, n_episode, fix_seed=False):
+        self.cross_domain = False
+        self.transform = transform
+        self.n_way = n_way
+        self.n_support = n_support
+        self.n_query = n_query
+        self.n_episode = n_episode
+        self.fix_seed = fix_seed
+
+        if not isinstance(data_folder, list):
+            import torchvision
+            dataset = torchvision.datasets.ImageFolder(data_folder, transform=transform)
+            self.dataset = dataset
+            if self.n_episode < 0:
+                self.n_episode = len(dataset) // (n_way*(n_support+n_query))
+            self.cl_list = list(range(len(dataset.classes)))
+            self.cl_idx = []
+            labels = np.array(dataset.targets)
+            for cl in self.cl_list:
+                self.cl_idx.append(np.where(labels==cl))
+        else:
+            self.cross_domain = True
+            import torchvision
+            support_dataset = torchvision.datasets.ImageFolder(data_folder[0], transform=transform)
+            query_dataset = torchvision.datasets.ImageFolder(data_folder[1], transform=transform)
+            self.support_dataset = support_dataset
+            self.query_dataset = query_dataset
+            if self.n_episode < 0:
+                self.n_episode = (len(support_dataset) + len(query_dataset)) // (n_way*(n_support+n_query))
+            self.cl_list = list(range(len(support_dataset.classes)))
+            self.sup_cl_idx = []
+            self.que_cl_idx = []
+            sup_labels = np.array(support_dataset.targets)
+            que_labels = np.array(query_dataset.targets)
+            for cl in self.cl_list:
+                self.sup_cl_idx.append(np.where(sup_labels==cl)[0])
+                self.que_cl_idx.append(np.where(que_labels==cl)[0])
+
+    def __getitem__(self,i):
+        if self.fix_seed:
+            random.seed(i)
+        classes = random.sample(self.cl_list, k=self.n_way)
+        images = []
+        labels = []
+        for cl in classes:
+            if not self.cross_domain:
+                cl_idx = list(self.cl_idx[cl])
+                idx = random.sample(cl_idx, k=self.n_support+self.n_query)
+                for i in idx:
+                    image, label = self.dataset[i]
+                    images.append(image)
+                    labels.append(label)
+            else:
+                cl_idx = list(self.sup_cl_idx[cl])
+                idx = random.sample(cl_idx, k=self.n_support)
+                for i in idx:
+                    image, label = self.support_dataset[i]
+                    images.append(image)
+                    labels.append(label)
+                cl_idx = list(self.que_cl_idx[cl])
+                idx = random.sample(cl_idx, k=self.n_query)
+                for i in idx:
+                    image, label = self.query_dataset[i]
+                    images.append(image)
+                    labels.append(label)
+        images = torch.stack(images)
+        images = images.view(self.n_way, self.n_support+self.n_query, *images.shape[1:])
+        labels = torch.tensor(labels)
+        labels = labels.view(self.n_way, -1)
+
+        return images, labels
+
+    def __len__(self):
+        return self.n_episode
+
+
 class DatasetWithoutIndex:
     def __init__(self, dataset):
         self.dataset = dataset
@@ -221,4 +299,80 @@ class EpisodicBatchSampler(object):
             yield torch.randperm(self.n_classes)[:self.n_way]
         if self.fix_seed:
             torch.manual_seed(seed)
+
+# class EpisodeSampler:
+#     def __init__(self, label, n_batch, n_cls, n_per, fix_seed=True):
+#         if n_batch > 0:
+#             self.n_batch = n_batch
+#         else:
+#             self.n_batch = int(len(label)//(n_cls*n_per))
+#         self.n_cls = n_cls
+#         self.n_per = n_per
+#         self.fix_seed = fix_seed
+#
+#         label = np.array(label)
+#         self.m_ind = []
+#         for i in range(max(label) + 1):
+#             ind = np.argwhere(label == i).reshape(-1)
+#             ind = torch.from_numpy(ind)
+#             self.m_ind.append(ind)
+#
+#     def __len__(self):
+#         return self.n_batch
+#
+#     def __iter__(self):
+#         for i_batch in range(self.n_batch):
+#             if self.fix_seed:
+#                 np.random.seed(i_batch)
+#             batch = []
+#             # classes = torch.randperm(len(self.m_ind))[: self.n_cls]
+#             classes = np.random.choice(range(len(self.m_ind)), self.n_cls, False)
+#             for c in classes:
+#                 l = self.m_ind[c]
+#                 # pos = torch.randperm(len(l))[: self.n_per]
+#                 pos = np.random.choice(range(len(l)), self.n_per, False)
+#                 batch.append(l[pos])
+#             batch = torch.cat(batch).reshape(-1)
+#             if self.fix_seed:
+#                 np.random.seed()
+#             yield batch
+#
+# class CrossDomainEpisodeSampler:
+#     def __init__(self, support_label, query_label, n_batch, n_cls, n_shot, n_query, fix_seed=True):
+#         if n_batch > 0:
+#             self.n_batch = n_batch
+#         else:
+#             self.n_batch = int(len(support_label)+len(query_label)//(n_cls*(n_shot+n_query)))
+#         self.n_cls = n_cls
+#         self.n_shot = n_shot
+#         self.
+#         self.n_per = n_per
+#         self.fix_seed = fix_seed
+#
+#         label = np.array(label)
+#         self.m_ind = []
+#         for i in range(max(label) + 1):
+#             ind = np.argwhere(label == i).reshape(-1)
+#             ind = torch.from_numpy(ind)
+#             self.m_ind.append(ind)
+#
+#     def __len__(self):
+#         return self.n_batch
+#
+#     def __iter__(self):
+#         for i_batch in range(self.n_batch):
+#             if self.fix_seed:
+#                 np.random.seed(i_batch)
+#             batch = []
+#             # classes = torch.randperm(len(self.m_ind))[: self.n_cls]
+#             classes = np.random.choice(range(len(self.m_ind)), self.n_cls, False)
+#             for c in classes:
+#                 l = self.m_ind[c]
+#                 # pos = torch.randperm(len(l))[: self.n_per]
+#                 pos = np.random.choice(range(len(l)), self.n_per, False)
+#                 batch.append(l[pos])
+#             batch = torch.cat(batch).reshape(-1)
+#             if self.fix_seed:
+#                 np.random.seed()
+#             yield batch
 

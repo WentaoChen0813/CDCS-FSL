@@ -15,7 +15,7 @@ import torchvision
 
 class BaselineTrain(nn.Module):
     def __init__(self, model_func, num_class, loss_type = 'softmax', ad_align=False, ad_loss_weight=0.001,
-                 pseudo_align=False, momentum=0.6, threshold=0.9, proto_align=False, ada_proto=False):
+                 pseudo_align=False, momentum=0.6, threshold=0.9, proto_align=False, ada_proto=False, rot_align=False):
         super(BaselineTrain, self).__init__()
         self.feature    = model_func()
         if loss_type == 'softmax':
@@ -61,6 +61,10 @@ class BaselineTrain(nn.Module):
                 nn.ReLU(),
                 nn.Linear(256, 1)
             )
+        self.rot_align = rot_align
+        if rot_align:
+            feat_dim = self.feature.final_feat_dim
+            self.rot_classifier = nn.Linear(feat_dim, 4)
 
 
     def init_teacher(self):
@@ -116,7 +120,7 @@ class BaselineTrain(nn.Module):
                 selected_idx.append(idx[prob > self.threshold])
                 selected_y.append(pred[prob > self.threshold])
             selected_idx = torch.cat(selected_idx).detach().cpu().numpy()
-            selected_y = torch.cat(selected_y).detach().cpu().numpy()
+            selected_y = torch.cat(selected_y).detac21h().cpu().numpy()
 
             class NewDataset:
                 def __init__(self, dataset, label):
@@ -151,6 +155,8 @@ class BaselineTrain(nn.Module):
         with torch.no_grad():
             selected_idx = []
             selected_pred = []
+            if self.rot_align:
+                unlabeled_loader.dataset.rot = False
             for x, y, idx in unlabeled_loader:
                 if params.gt_proto:
                     selected = y < self.num_class
@@ -163,7 +169,12 @@ class BaselineTrain(nn.Module):
                     selected_pred.append(pred[selected])
             selected_idx = torch.cat(selected_idx).detach().cpu().numpy()
             selected_pred = torch.cat(selected_pred).detach().cpu().numpy()
-            paired_dataset = PseudoPairedSetDataset(train_loader.dataset, unlabeled_loader.dataset,
+            train_dataset = train_loader.dataset
+            unlabeled_dataset = unlabeled_loader.dataset
+            if self.rot_align:
+                train_dataset = train_dataset.dataset
+                unlabeled_dataset = unlabeled_dataset.dataset
+            paired_dataset = PseudoPairedSetDataset(train_dataset, unlabeled_dataset,
                                                     selected_idx, selected_pred, n_shot=params.n_shot, n_query=15)
             sampler = EpisodicBatchSampler(len(paired_dataset), params.train_n_way, n_episodes=10000, fix_seed=False)
             data_loader_params = dict(batch_sampler=sampler, num_workers=12, pin_memory=False)
@@ -172,6 +183,8 @@ class BaselineTrain(nn.Module):
             n_total = len(unlabeled_loader.dataset)
             n_class = len(np.unique(selected_pred))
             print(f'Select {n_pseudo} ({100.0 * n_pseudo / n_total:.2f}%) pesudo samples, {n_class} pseudo classes')
+            if self.rot_align:
+                unlabeled_loader.dataset.rot = True
             return paired_loader
     
     def train_loop(self, epoch, train_loader, optimizer, params=None):
@@ -180,6 +193,7 @@ class BaselineTrain(nn.Module):
         avg_ad_loss = 0
         avg_discriminator_loss = 0
         avg_proto_loss = 0
+        avg_rot_loss = 0
 
         if self.ad_align:
             train_loader, unlabeled_loader = train_loader
@@ -190,6 +204,8 @@ class BaselineTrain(nn.Module):
                 paired_iter = iter(paired_loader)
 
         for i, (x,y) in enumerate(train_loader):
+            if self.rot_align:
+                y, rot = y
             if self.pseudo_align:
                 pseudo_idx = y < 0
                 real_idx = y >= 0
@@ -198,16 +214,25 @@ class BaselineTrain(nn.Module):
             loss, fx = self.forward_loss(x, y)
             avg_loss = avg_loss + loss.item()
 
+            # if self.rot_align:
+                # rot_loss = self.loss_fn(self.rot_classifier(fx), rot.cuda())
+
             if self.ad_align:
                 if i % n_unlabeled == 0:
                     unlabeled_iter = iter(unlabeled_loader)
-                ux, *_ = next(unlabeled_iter)
+                ux, y, _ = next(unlabeled_iter)
                 if self.pseudo_align:
                     ux = ux[:n_real]
                 ad_loss, fux = self.discriminator_loss(ux, 1)
                 ad_loss *= self.ad_loss_weight
                 avg_ad_loss += ad_loss.item()
                 loss += ad_loss
+
+                if self.rot_align:
+                    _, rot = y
+                    rot_loss = self.loss_fn(self.rot_classifier(fux), rot.cuda())
+                    avg_rot_loss += rot_loss.item()
+                    loss += rot_loss
 
             if self.proto_align:
                 sqx, _ = next(paired_iter)
@@ -219,11 +244,21 @@ class BaselineTrain(nn.Module):
                 sqfx = sqfx.view(n_way, n_shot+n_query, -1)
                 sfx, qfx = sqfx[:, :n_shot], sqfx[:, n_shot:]
                 if self.ada_proto:
-                    sfx = sfx.contiguous().view(n_way * n_shot, -1)
-                    score = self.classifier(sfx)
-                    weight = self.weight_predictor(score)
+                    sx = sqx.view(n_way, n_shot + n_query, *sqx.shape[1:])[:, :n_shot]
+                    sx = sx.contiguous().view(n_way * n_shot, *sx.shape[2:])
+                    with torch.no_grad():
+                        sx = sx.cuda()
+                        sx = self.teacher_feature(sx)
+                        logit = self.teacher_classifier(sx)
+                        prob = torch.softmax(logit, dim=-1)
+                        max_logit, pred = logit.max(dim=-1)
+                    weight = self.weight_predictor(prob)
+                    weight += max_logit.unsqueeze(-1)
+                    logit = torch.scatter(logit, dim=-1, index=pred.unsqueeze(-1), src=weight)
+                    prob = torch.softmax(logit, -1)
+                    weight = torch.gather(prob, dim=-1, index=pred.unsqueeze(-1))
                     weight = weight.view(n_way, n_shot)
-                    weight = F.softmax(weight, dim=-1)
+                    weight = weight / (weight.sum(dim=-1, keepdim=True) + 1e-6)
                     sfx = sfx.view(n_way, n_shot, -1)
                     proto = (sfx * weight.unsqueeze(-1)).sum(dim=1)
                 elif params.weight_proto:
@@ -261,29 +296,27 @@ class BaselineTrain(nn.Module):
 
             if i % print_freq==0:
                 #print(optimizer.state_dict()['param_groups'][0]['lr'])
-                if not self.ad_align:
-                    print('Epoch {:d} | Batch {:d}/{:d} | Loss {:f}'.format(epoch, i, len(train_loader), avg_loss/float(i+1)  ))
-                elif not self.proto_align:
-                    print('Epoch {:d} | Batch {:d}/{:d} | Loss {:f} | Ad_loss {:f} | Discriminator_loss {:f}'.format(
-                        epoch, i, len(train_loader), avg_loss/(i+1), avg_ad_loss/(i+1), avg_discriminator_loss/(i+1)))
-                else:
-                    print('Epoch {:d} | Batch {:d}/{:d} | Loss {:f} | Proto_loss {:f} | Ad_loss {:f} | Discriminator_loss {:f}'.format(
-                        epoch, i, len(train_loader), avg_loss / (i + 1), avg_proto_loss/(i+1), avg_ad_loss / (i + 1), avg_discriminator_loss / (i + 1)))
+                print_line = 'Epoch {:d} | Batch {:d}/{:d} | Loss {:f}'.format(epoch, i, len(train_loader), avg_loss / float(i + 1))
+                if self.ad_align:
+                    print_line += ' | Ad_loss {:f} | Discriminator_loss {:f}'.format(avg_ad_loss / (i + 1), avg_discriminator_loss / (i + 1))
+                if self.proto_align:
+                    print_line += ' | Proto_loss {:f}'.format(avg_proto_loss / (i + 1))
+                if self.rot_align:
+                    print_line += ' | Rot_loss {:f}'.format(avg_rot_loss / (i + 1))
+                print(print_line)
 
             if self.pseudo_align or self.proto_align:
                 self.update_teacher()
 
-        if not self.ad_align:
-            return avg_loss / (i+1)
-        elif not self.proto_align:
-            return {'loss': avg_loss/(i+1),
-                    'ad_loss': avg_ad_loss/(i+1),
-                    'discriminator_loss': avg_discriminator_loss/(i+1)}
-        else:
-            return {'loss': avg_loss / (i + 1),
-                    'proto_loss': avg_proto_loss / (i + 1),
-                    'ad_loss': avg_ad_loss / (i + 1),
-                    'discriminator_loss': avg_discriminator_loss / (i + 1)}
+        loss_dict = {'loss': avg_loss / (i + 1)}
+        if self.ad_align:
+            loss_dict['ad_loss'] = avg_ad_loss / (i + 1)
+            loss_dict['discriminator_loss'] = avg_discriminator_loss / (i + 1)
+        if self.proto_align:
+            loss_dict['proto_loss'] = avg_proto_loss / (i + 1)
+        if self.rot_align:
+            loss_dict['rot_loss'] = avg_rot_loss / (i + 1)
+        return loss_dict
                      
     def test_loop(self, epoch, val_loader, params):
         # if self.DBval:
@@ -293,6 +326,7 @@ class BaselineTrain(nn.Module):
         accs = []
         with torch.no_grad():
             for img, label in tqdm(val_loader):
+                img, label = img.squeeze(), label.squeeze()
                 n_way = params.test_n_way
                 n_shot = params.n_shot
                 n_query = img.shape[1] - n_shot

@@ -78,12 +78,16 @@ if __name__=='__main__':
     # params.exp = 'debug'
     # params.gpu = '0'
     # params.ad_align = True
+    # params.rot_align = False
     # params.proto_align = True
-    # params.ada_proto = True
+    # params.weight_proto = True
+    # params.ada_proto = False
     # params.batch_size = 128
     # params.resume = True
-    # params.checkpoint = 'checkpoints/DomainNet/ResNet18_baseline++/painting_real_ad_align'
-    # params.save_iter = 50
+    # params.checkpoint = 'checkpoints/DomainNet/ResNet18_baseline++/painting_real_ad_align_weightproto_align_th0.9'
+    # params.save_iter = -1
+    # params.test = True
+    # params.n_episode = 100
 
     os.environ['CUDA_VISIBLE_DEVICES'] = params.gpu
     if params.seed >= 0:
@@ -155,14 +159,15 @@ if __name__=='__main__':
 
     if params.method in ['baseline', 'baseline++'] :
         base_datamgr    = SimpleDataManager(image_size, batch_size = params.batch_size)
-        base_loader     = base_datamgr.get_data_loader( data_folder=base_folder, aug=params.train_aug)
+        base_loader     = base_datamgr.get_data_loader( data_folder=base_folder, aug=params.train_aug, rot=params.rot_align)
         few_shot_params = dict(n_way=params.test_n_way, n_support=params.n_shot)
         val_datamgr = SetDataManager(image_size, n_query = 15, n_episode=params.n_episode, **few_shot_params)
-        val_loader = val_datamgr.get_data_loader(data_folder=val_folder, aug=False)
+        val_loader = val_datamgr.get_data_loader(data_folder=val_folder, aug=False, fix_seed=True)
         if params.cross_domain and params.ad_align:
             unlabeled_datamgr = SimpleDataManager(image_size, batch_size = params.batch_size)
             unlabeled_loader = unlabeled_datamgr.get_data_loader(data_folder=unlabeled_folder, aug=params.train_aug,
-                                                                 proportion=params.unlabeled_proportion, with_idx=True)
+                                                                 proportion=params.unlabeled_proportion, with_idx=True,
+                                                                 rot=params.rot_align)
             base_loader = [base_loader, unlabeled_loader]
         
         if params.dataset == 'omniglot':
@@ -175,13 +180,13 @@ if __name__=='__main__':
                                              ad_align=params.ad_align, ad_loss_weight=params.ad_loss_weight,
                                              pseudo_align=params.pseudo_align, momentum=params.momentum,
                                              threshold=params.threshold, proto_align=params.proto_align,
-                                             ada_proto=params.ada_proto)
+                                             ada_proto=params.ada_proto, rot_align=params.rot_align)
         elif params.method == 'baseline++':
             model           = BaselineTrain( model_dict[params.model], params.num_classes, loss_type = 'dist',
                                              ad_align=params.ad_align, ad_loss_weight=params.ad_loss_weight,
                                              pseudo_align=params.pseudo_align, momentum=params.momentum,
                                              threshold=params.threshold, proto_align=params.proto_align,
-                                             ada_proto=params.ada_proto)
+                                             ada_proto=params.ada_proto, rot_align=params.rot_align)
 
     elif params.method in ['protonet','matchingnet','relationnet', 'relationnet_softmax', 'maml', 'maml_approx']:
         n_query = max(1, int(15* params.test_n_way/params.train_n_way)) #if test_n_way is smaller than train_n_way, reduce n_query to keep batch size small
@@ -191,8 +196,10 @@ if __name__=='__main__':
         base_loader             = base_datamgr.get_data_loader( data_folder=base_folder, aug=params.train_aug, fix_seed=False)
          
         test_few_shot_params     = dict(n_way = params.test_n_way, n_support = params.n_shot) 
-        val_datamgr             = SetDataManager(image_size, n_query = n_query, n_episode=params.n_episode, **test_few_shot_params)
-        val_loader              = val_datamgr.get_data_loader( data_folder=val_folder, aug = False)
+        # val_datamgr             = SetDataManager(image_size, n_query = n_query, n_episode=params.n_episode, **test_few_shot_params)
+        # val_loader              = val_datamgr.get_data_loader( data_folder=val_folder, aug = False)
+        val_datamgr = SetDataManager(image_size, n_query=15, n_episode=params.n_episode, **test_few_shot_params)
+        val_loader = val_datamgr.get_data_loader(data_folder=val_folder, aug=False, fix_seed=True)
         #a batch for SetDataManager: a [n_way, n_support + n_query, dim, w, h] tensor        
 
         if params.method == 'protonet':
@@ -261,6 +268,7 @@ if __name__=='__main__':
         resume_file = get_resume_file(checkpoint_dir, save_iter=params.save_iter)
         if resume_file is not None:
             tmp = torch.load(resume_file)
+            print(f'load state dict from epoch {tmp["epoch"]}')
             start_epoch = tmp['epoch']+1
             model.load_state_dict(tmp['state'], strict=False)
             if params.proto_align:

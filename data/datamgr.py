@@ -4,9 +4,10 @@ import torch
 import torchvision
 from PIL import Image
 import numpy as np
+import random
 import torchvision.transforms as transforms
 import data.additional_transforms as add_transforms
-from data.dataset import SimpleDataset, SetDataset, EpisodicBatchSampler
+from data.dataset import SimpleDataset, SetDataset, EpisodicBatchSampler, EpisodeDataset
 from abc import abstractmethod
 
 class TransformLoader:
@@ -61,13 +62,33 @@ class DatasetWithIndex:
         return len(self.dataset)
 
 
+class DatasetWithRotation:
+    def __init__(self, dataset):
+        self.dataset = dataset
+        self.rot = True
+
+    def __getitem__(self, i):
+        if not self.rot:
+            return self.dataset[i]
+        input = list(self.dataset[i])
+        img = input[0]
+        rot = random.choice(range(4))
+        img = torch.rot90(img, k=rot, dims=[1,2])
+        input[0] = img
+        input[1] = (input[1], rot)
+        return tuple(input)
+
+    def __len__(self):
+        return len(self.dataset)
+
+
 class SimpleDataManager(DataManager):
     def __init__(self, image_size, batch_size):        
         super(SimpleDataManager, self).__init__()
         self.batch_size = batch_size
         self.trans_loader = TransformLoader(image_size)
 
-    def get_data_loader(self, data_file=None, data_folder=None, aug=None, proportion=1, with_idx=False): #parameters that would change on train/val set
+    def get_data_loader(self, data_file=None, data_folder=None, aug=None, proportion=1, with_idx=False, rot=False): #parameters that would change on train/val set
         transform = self.trans_loader.get_composed_transform(aug)
         if data_file is not None:
             dataset = SimpleDataset(data_file, transform)
@@ -92,6 +113,8 @@ class SimpleDataManager(DataManager):
             dataset = torch.utils.data.random_split(dataset, [n_samples, len(dataset)-n_samples])[0]
         if with_idx:
             dataset = DatasetWithIndex(dataset)
+        if rot:
+            dataset = DatasetWithRotation(dataset)
         data_loader_params = dict(batch_size = self.batch_size, shuffle = True, num_workers = 12)
         data_loader = torch.utils.data.DataLoader(dataset, **data_loader_params)
 
@@ -109,16 +132,17 @@ class SetDataManager(DataManager):
 
         self.trans_loader = TransformLoader(image_size)
 
-    def get_data_loader(self, data_file=None, data_folder=None,  aug=False, fix_seed=True): #parameters that would change on train/val set
+    def get_data_loader(self, data_file=None, data_folder=None,  aug=False, fix_seed=False): #parameters that would change on train/val set
         transform = self.trans_loader.get_composed_transform(aug)
-        if isinstance(data_folder, list):
-            dataset = SetDataset(data_file, data_folder, [self.n_support, self.n_query], transform)
-        else:
-            dataset = SetDataset( data_file, data_folder, self.batch_size, transform )
-        if self.n_episode < 0:
-            self.n_episode = int(dataset.get_sample_number() / (self.n_way * self.batch_size))
-        sampler = EpisodicBatchSampler(len(dataset), self.n_way, self.n_episode, fix_seed)
-        data_loader_params = dict(batch_sampler = sampler,  num_workers = 12, pin_memory = True)
+        # if isinstance(data_folder, list):
+        #     dataset = SetDataset(data_file, data_folder, [self.n_support, self.n_query], transform)
+        # else:
+        #     dataset = SetDataset( data_file, data_folder, self.batch_size, transform )
+        dataset = EpisodeDataset(data_folder, transform, self.n_way, self.n_support, self.n_query, self.n_episode, fix_seed)
+        # if self.n_episode < 0:
+        #     self.n_episode = int(dataset.get_sample_number() / (self.n_way * self.batch_size))
+        # sampler = EpisodicBatchSampler(len(dataset), self.n_way, self.n_episode, fix_seed)
+        data_loader_params = dict(num_workers = 12, pin_memory = True, batch_size = 1)
         data_loader = torch.utils.data.DataLoader(dataset, **data_loader_params)
         return data_loader
 

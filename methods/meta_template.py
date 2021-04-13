@@ -79,6 +79,7 @@ class MetaTemplate(nn.Module):
         
         iter_num = len(test_loader) 
         for x,_ in tqdm(test_loader):
+            x = x.squeeze()
             self.n_query = x.size(1) - self.n_support
             if self.change_way:
                 self.n_way  = x.size(0)

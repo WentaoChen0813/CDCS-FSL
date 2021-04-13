@@ -34,6 +34,7 @@ def parse_args(script):
         parser.add_argument('--ad_align'    , action='store_true')
         parser.add_argument('--unlabeled_proportion', default=0.2, type=float)
         parser.add_argument('--ad_loss_weight', default=0.001, type=float)
+        parser.add_argument('--rot_align'   , action='store_true')
         parser.add_argument('--pseudo_align', action='store_true')
         parser.add_argument('--proto_align' , action='store_true')
         parser.add_argument('--gt_proto'    , action='store_true')
