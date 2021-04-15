@@ -53,11 +53,12 @@ class MetaTemplate(nn.Module):
         top1_correct = np.sum(topk_ind[:,0] == y_query)
         return float(top1_correct), len(y_query)
 
-    def train_loop(self, epoch, train_loader, optimizer ):
+    def train_loop(self, epoch, train_loader, optimizer, params):
         print_freq = 10
 
         avg_loss=0
         for i, (x,_ ) in enumerate(train_loader):
+            x = x.squeeze()
             self.n_query = x.size(1) - self.n_support           
             if self.change_way:
                 self.n_way  = x.size(0)

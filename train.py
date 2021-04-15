@@ -76,8 +76,9 @@ if __name__=='__main__':
     params = parse_args('train')
     # DEBUG
     # params.exp = 'debug'
-    # params.gpu = '0'
+    # params.gpu = '1'
     # params.ad_align = True
+    # params.pseudo_align = True
     # params.rot_align = False
     # params.proto_align = True
     # params.weight_proto = True
@@ -104,21 +105,22 @@ if __name__=='__main__':
         base_file = configs.data_dir['omniglot'] + 'noLatin.json' 
         val_file   = configs.data_dir['emnist'] + 'val.json'
     elif params.dataset == 'DomainNet':
-        base_folder = '/mnt/sdb/wentao/few-shot-learning/dataset/DomainNet/real/base/'
+        base_folder = '../dataset/DomainNet/real/base/'
+
         if params.supervised_align:
             base_folder = [base_folder,
-                           f'/mnt/sdb/wentao/few-shot-learning/dataset/DomainNet/{params.cross_domain}/base/']
-        val_folder = os.path.join('/mnt/sdb/wentao/few-shot-learning/dataset/DomainNet/real/',
+                           f'../dataset/DomainNet/{params.cross_domain}/base/']
+        val_folder = os.path.join('../dataset/DomainNet/real/',
                                    params.split)
         if params.cross_domain:
-            val_folder = [os.path.join(f'/mnt/sdb/wentao/few-shot-learning/dataset/DomainNet/{params.cross_domain}/',
+            val_folder = [os.path.join(f'../dataset/DomainNet/{params.cross_domain}/',
                                        params.split),
                           val_folder
                           ]
-        if params.cross_domain and params.ad_align > 0:
-            unlabeled_folder = [f'/mnt/sdb/wentao/few-shot-learning/dataset/DomainNet/{params.cross_domain}/base',
-                                f'/mnt/sdb/wentao/few-shot-learning/dataset/DomainNet/{params.cross_domain}/val',
-                                f'/mnt/sdb/wentao/few-shot-learning/dataset/DomainNet/{params.cross_domain}/novel']
+        if params.cross_domain and (params.ad_align or params.pseudo_align):
+            unlabeled_folder = [f'../dataset/DomainNet/{params.cross_domain}/base',
+                                f'../dataset/DomainNet/{params.cross_domain}/val',
+                                f'../dataset/DomainNet/{params.cross_domain}/novel']
 
     else:
         base_file = configs.data_dir[params.dataset] + 'base.json' 
@@ -163,9 +165,10 @@ if __name__=='__main__':
         few_shot_params = dict(n_way=params.test_n_way, n_support=params.n_shot)
         val_datamgr = SetDataManager(image_size, n_query = 15, n_episode=params.n_episode, **few_shot_params)
         val_loader = val_datamgr.get_data_loader(data_folder=val_folder, aug=False, fix_seed=True)
-        if params.cross_domain and params.ad_align:
+        if params.cross_domain and (params.ad_align or params.pseudo_align):
             unlabeled_datamgr = SimpleDataManager(image_size, batch_size = params.batch_size)
             unlabeled_loader = unlabeled_datamgr.get_data_loader(data_folder=unlabeled_folder, aug=params.train_aug,
+                                                                 add_label=True,
                                                                  proportion=params.unlabeled_proportion, with_idx=True,
                                                                  rot=params.rot_align)
             base_loader = [base_loader, unlabeled_loader]
@@ -186,7 +189,8 @@ if __name__=='__main__':
                                              ad_align=params.ad_align, ad_loss_weight=params.ad_loss_weight,
                                              pseudo_align=params.pseudo_align, momentum=params.momentum,
                                              threshold=params.threshold, proto_align=params.proto_align,
-                                             ada_proto=params.ada_proto, rot_align=params.rot_align)
+                                             ada_proto=params.ada_proto, rot_align=params.rot_align,
+                                             scale=params.scale)
 
     elif params.method in ['protonet','matchingnet','relationnet', 'relationnet_softmax', 'maml', 'maml_approx']:
         n_query = max(1, int(15* params.test_n_way/params.train_n_way)) #if test_n_way is smaller than train_n_way, reduce n_query to keep batch size small
@@ -195,9 +199,7 @@ if __name__=='__main__':
         base_datamgr            = SetDataManager(image_size, n_query = n_query, **train_few_shot_params)
         base_loader             = base_datamgr.get_data_loader( data_folder=base_folder, aug=params.train_aug, fix_seed=False)
          
-        test_few_shot_params     = dict(n_way = params.test_n_way, n_support = params.n_shot) 
-        # val_datamgr             = SetDataManager(image_size, n_query = n_query, n_episode=params.n_episode, **test_few_shot_params)
-        # val_loader              = val_datamgr.get_data_loader( data_folder=val_folder, aug = False)
+        test_few_shot_params     = dict(n_way = params.test_n_way, n_support = params.n_shot)
         val_datamgr = SetDataManager(image_size, n_query=15, n_episode=params.n_episode, **test_few_shot_params)
         val_loader = val_datamgr.get_data_loader(data_folder=val_folder, aug=False, fix_seed=True)
         #a batch for SetDataManager: a [n_way, n_support + n_query, dim, w, h] tensor        
@@ -233,7 +235,7 @@ if __name__=='__main__':
 
     model = model.cuda()
 
-    params.checkpoint_dir = '%s/checkpoints/%s/%s_%s' %(configs.save_dir, params.dataset, params.model, params.method)
+    params.checkpoint_dir = '%s/checkpoints/%s/%s/%s_%s' %(configs.save_dir, params.dataset, params.cross_domain, params.model, params.method)
     if params.train_aug:
         params.checkpoint_dir += '_aug'
     if not params.method  in ['baseline', 'baseline++']: 

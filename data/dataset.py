@@ -145,7 +145,7 @@ class EpisodeDataset:
             self.cl_idx = []
             labels = np.array(dataset.targets)
             for cl in self.cl_list:
-                self.cl_idx.append(np.where(labels==cl))
+                self.cl_idx.append(np.where(labels==cl)[0])
         else:
             self.cross_domain = True
             import torchvision

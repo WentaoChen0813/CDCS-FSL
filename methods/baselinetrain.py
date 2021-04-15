@@ -15,14 +15,15 @@ import torchvision
 
 class BaselineTrain(nn.Module):
     def __init__(self, model_func, num_class, loss_type = 'softmax', ad_align=False, ad_loss_weight=0.001,
-                 pseudo_align=False, momentum=0.6, threshold=0.9, proto_align=False, ada_proto=False, rot_align=False):
+                 pseudo_align=False, momentum=0.6, threshold=0.9, proto_align=False, ada_proto=False, rot_align=False,
+                 scale=2):
         super(BaselineTrain, self).__init__()
         self.feature    = model_func()
         if loss_type == 'softmax':
             self.classifier = nn.Linear(self.feature.final_feat_dim, num_class)
             self.classifier.bias.data.fill_(0)
         elif loss_type == 'dist': #Baseline ++
-            self.classifier = backbone.distLinear(self.feature.final_feat_dim, num_class)
+            self.classifier = backbone.distLinear(self.feature.final_feat_dim, num_class, scale)
         self.loss_type = loss_type  #'softmax' #'dist'
         self.num_class = num_class
         self.loss_fn = nn.CrossEntropyLoss()
@@ -120,7 +121,7 @@ class BaselineTrain(nn.Module):
                 selected_idx.append(idx[prob > self.threshold])
                 selected_y.append(pred[prob > self.threshold])
             selected_idx = torch.cat(selected_idx).detach().cpu().numpy()
-            selected_y = torch.cat(selected_y).detac21h().cpu().numpy()
+            selected_y = torch.cat(selected_y).detach().cpu().numpy()
 
             class NewDataset:
                 def __init__(self, dataset, label):
@@ -195,8 +196,10 @@ class BaselineTrain(nn.Module):
         avg_proto_loss = 0
         avg_rot_loss = 0
 
-        if self.ad_align:
+        if self.ad_align or self.pseudo_align:
             train_loader, unlabeled_loader = train_loader
+
+        if self.ad_align:
             n_unlabeled = len(unlabeled_loader)
             optimizer, discriminator_optim = optimizer
             if self.proto_align:
@@ -224,8 +227,8 @@ class BaselineTrain(nn.Module):
                 if self.pseudo_align:
                     ux = ux[:n_real]
                 ad_loss, fux = self.discriminator_loss(ux, 1)
-                ad_loss *= self.ad_loss_weight
                 avg_ad_loss += ad_loss.item()
+                ad_loss *= self.ad_loss_weight
                 loss += ad_loss
 
                 if self.rot_align:

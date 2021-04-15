@@ -20,17 +20,18 @@ def init_layer(L):
         L.bias.data.fill_(0)
 
 class distLinear(nn.Module):
-    def __init__(self, indim, outdim):
+    def __init__(self, indim, outdim, scale=2):
         super(distLinear, self).__init__()
         self.L = nn.Linear( indim, outdim, bias = False)
         self.class_wise_learnable_norm = True  #See the issue#4&8 in the github 
         if self.class_wise_learnable_norm:      
             WeightNorm.apply(self.L, 'weight', dim=0) #split the weight update component to direction and norm      
 
-        if outdim <=200:
-            self.scale_factor = 2; #a fixed scale factor to scale the output of cos value into a reasonably large input for softmax, for to reproduce the result of CUB with ResNet10, use 4. see the issue#31 in the github 
-        else:
-            self.scale_factor = 10; #in omniglot, a larger scale factor is required to handle >1000 output classes.
+        # if outdim <=200:
+        #     self.scale_factor = 2; #a fixed scale factor to scale the output of cos value into a reasonably large input for softmax, for to reproduce the result of CUB with ResNet10, use 4. see the issue#31 in the github
+        # else:
+        #     self.scale_factor = 10; #in omniglot, a larger scale factor is required to handle >1000 output classes.
+        self.scale_factor = scale
 
     def forward(self, x):
         x_norm = torch.norm(x, p=2, dim =1).unsqueeze(1).expand_as(x)

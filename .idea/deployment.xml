@@ -9,6 +9,13 @@
           </mappings>
         </serverdata>
       </paths>
+      <paths name="63">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/CloserLookFewShot" local="$PROJECT_DIR$" web="/" />
+          </mappings>
+        </serverdata>
+      </paths>
       <paths name="wentao@172.18.32.180:22">
         <serverdata>
           <mappings>
