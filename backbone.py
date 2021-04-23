@@ -44,6 +44,18 @@ class distLinear(nn.Module):
 
         return scores
 
+class protoLinear(nn.Module):
+    def __init__(self, indim, outdim):
+        super().__init__()
+        self.prototypes = nn.Parameter(torch.ones(indim, outdim))
+        nn.init.kaiming_uniform_(self.prototypes)
+
+    def forward(self, x):
+        dist = (x.unsqueeze(-1) - self.prototypes.unsqueeze(0)) ** 2
+        dist = dist.sum(dim=1)
+        score = -dist
+        return score
+
 class Flatten(nn.Module):
     def __init__(self):
         super(Flatten, self).__init__()

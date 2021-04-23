@@ -24,6 +24,8 @@ class BaselineTrain(nn.Module):
             self.classifier.bias.data.fill_(0)
         elif loss_type == 'dist': #Baseline ++
             self.classifier = backbone.distLinear(self.feature.final_feat_dim, num_class, scale)
+        elif loss_type == 'euclidean':
+            self.classifier = backbone.protoLinear(self.feature.final_feat_dim, num_class)
         self.loss_type = loss_type  #'softmax' #'dist'
         self.num_class = num_class
         self.loss_fn = nn.CrossEntropyLoss()
@@ -50,6 +52,8 @@ class BaselineTrain(nn.Module):
                 self.teacher_classifier.bias.data.fill_(0)
             elif loss_type == 'dist':  # Baseline ++
                 self.teacher_classifier = backbone.distLinear(self.feature.final_feat_dim, num_class)
+            elif loss_type == 'euclidean':
+                self.teacher_classifier = backbone.protoLinear(self.feature.final_feat_dim, num_class)
             self.init_teacher()
         self.ada_proto = ada_proto
         if ada_proto:

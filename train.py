@@ -76,7 +76,9 @@ if __name__=='__main__':
     params = parse_args('train')
     # DEBUG
     # params.exp = 'debug'
-    # params.gpu = '1'
+    # params.gpu = '3'
+    # params.method = 'baseline'
+    # params.loss_type = 'euclidean'
     # params.ad_align = True
     # params.pseudo_align = True
     # params.rot_align = False
@@ -85,9 +87,10 @@ if __name__=='__main__':
     # params.ada_proto = False
     # params.batch_size = 128
     # params.resume = True
-    # params.checkpoint = 'checkpoints/DomainNet/ResNet18_baseline++/painting_real_ad_align_weightproto_align_th0.9'
-    # params.save_iter = -1
+    # params.checkpoint = 'checkpoints/DomainNet/painting/ResNet18_baseline/0'
+    # params.save_iter = 10
     # params.test = True
+    # params.split = 'base'
     # params.n_episode = 100
 
     os.environ['CUDA_VISIBLE_DEVICES'] = params.gpu
@@ -185,7 +188,7 @@ if __name__=='__main__':
                                              threshold=params.threshold, proto_align=params.proto_align,
                                              ada_proto=params.ada_proto, rot_align=params.rot_align)
         elif params.method == 'baseline++':
-            model           = BaselineTrain( model_dict[params.model], params.num_classes, loss_type = 'dist',
+            model           = BaselineTrain( model_dict[params.model], params.num_classes, loss_type = params.loss_type,
                                              ad_align=params.ad_align, ad_loss_weight=params.ad_loss_weight,
                                              pseudo_align=params.pseudo_align, momentum=params.momentum,
                                              threshold=params.threshold, proto_align=params.proto_align,
@@ -197,6 +200,8 @@ if __name__=='__main__':
  
         train_few_shot_params    = dict(n_way = params.train_n_way, n_support = params.n_shot) 
         base_datamgr            = SetDataManager(image_size, n_query = n_query, **train_few_shot_params)
+        if params.supervised_align:
+            base_folder = [base_folder[1], base_folder[0]]
         base_loader             = base_datamgr.get_data_loader( data_folder=base_folder, aug=params.train_aug, fix_seed=False)
          
         test_few_shot_params     = dict(n_way = params.test_n_way, n_support = params.n_shot)
