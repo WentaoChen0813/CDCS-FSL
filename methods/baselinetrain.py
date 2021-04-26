@@ -14,10 +14,11 @@ import torch.nn.functional as F
 import torchvision
 
 class BaselineTrain(nn.Module):
-    def __init__(self, model_func, num_class, loss_type = 'softmax', ad_align=False, ad_loss_weight=0.001,
+    def __init__(self, params, model_func, num_class, loss_type = 'softmax', ad_align=False, ad_loss_weight=0.001,
                  pseudo_align=False, momentum=0.6, threshold=0.9, proto_align=False, ada_proto=False, rot_align=False,
                  scale=2):
         super(BaselineTrain, self).__init__()
+        self.params = params
         self.feature    = model_func()
         if loss_type == 'softmax':
             self.classifier = nn.Linear(self.feature.final_feat_dim, num_class)
@@ -98,14 +99,19 @@ class BaselineTrain(nn.Module):
         x = self.teacher_classifier(x)
         x = F.softmax(x, dim=-1)
         max_prob, pred = x.max(dim=-1)
-        return max_prob.cpu(), pred.cpu()
+        return max_prob.cpu(), pred.cpu(), x.cpu()
 
     def forward_loss(self, x, y):
         x = x.cuda()
         feature = self.feature(x)
         scores = self.classifier(feature)
         y = y.cuda()
-        return self.loss_fn(scores, y ), feature
+        if len(y.shape) > 1:
+            pred = F.log_softmax(scores, -1)
+            loss = F.kl_div(pred, y, reduction='batchmean')
+        else:
+            loss = self.loss_fn(scores, y)
+        return loss, feature
 
     def discriminator_loss(self, x, y, is_feature=False):
         if not is_feature:
@@ -115,46 +121,100 @@ class BaselineTrain(nn.Module):
         y = torch.ones(pred.shape[0], dtype=torch.long).cuda() * y
         return self.loss_fn(pred, y), x
 
-    def get_pseudo_samples(self, train_loader):
-        with torch.no_grad():
-            train_loader, unlabeled_loader = train_loader
-            selected_y = []
-            selected_idx = []
-            for x, _, idx in unlabeled_loader:
-                prob, pred = self.teacher_forward(x)
-                selected_idx.append(idx[prob > self.threshold])
-                selected_y.append(pred[prob > self.threshold])
-            selected_idx = torch.cat(selected_idx).detach().cpu().numpy()
-            selected_y = torch.cat(selected_y).detach().cpu().numpy()
+    def get_pseudo_samples(self, train_loader, params):
+        if not params.soft_label:
+            with torch.no_grad():
+                train_loader, unlabeled_loader = train_loader
+                selected_y = []
+                selected_idx = []
+                for x, _, idx in unlabeled_loader:
+                    prob, pred, _ = self.teacher_forward(x)
+                    selected_idx.append(idx[prob > self.threshold])
+                    selected_y.append(pred[prob > self.threshold])
+                selected_idx = torch.cat(selected_idx).detach().cpu().numpy()
+                selected_y = torch.cat(selected_y).detach().cpu().numpy()
 
-            class NewDataset:
-                def __init__(self, dataset, label):
-                    self.dataset = dataset
-                    self.label = label
+                class NewDataset:
+                    def __init__(self, dataset, label):
+                        self.dataset = dataset
+                        self.label = label
 
-                def __getitem__(self, index):
-                    data, *_ = self.dataset[index]
-                    label = self.label[index]
-                    label = -label - 1
-                    return data, label
+                    def __getitem__(self, index):
+                        data, *_ = self.dataset[index]
+                        label = self.label[index]
+                        label = -label - 1
+                        return data, label
 
-                def __len__(self):
-                    return len(self.dataset)
+                    def __len__(self):
+                        return len(self.dataset)
 
-            if len(selected_y) > 0:
-                n_pseudo = len(selected_y)
-                n_total = len(unlabeled_loader.dataset)
-                print(f'Select {n_pseudo} ({100.0*n_pseudo/n_total:.2f}%) pesudo samples')
-                pseudo_dataset = torch.utils.data.Subset(unlabeled_loader.dataset, selected_idx)
-                pseudo_dataset = NewDataset(pseudo_dataset, selected_y)
-                labeled_dataset = train_loader.dataset
-                new_dataset = torch.utils.data.ConcatDataset([labeled_dataset, pseudo_dataset])
-                train_loader = torch.utils.data.DataLoader(new_dataset,
-                                                           batch_size=train_loader.batch_size,
-                                                           shuffle=True,
-                                                           num_workers=12,
-                                                           drop_last=True)
-            return train_loader, unlabeled_loader
+                if len(selected_y) > 0:
+                    n_pseudo = len(selected_y)
+                    n_total = len(unlabeled_loader.dataset)
+                    print(f'Select {n_pseudo} ({100.0*n_pseudo/n_total:.2f}%) pesudo samples')
+                    pseudo_dataset = torch.utils.data.Subset(unlabeled_loader.dataset, selected_idx)
+                    pseudo_dataset = NewDataset(pseudo_dataset, selected_y)
+                    labeled_dataset = train_loader.dataset
+                    new_dataset = torch.utils.data.ConcatDataset([labeled_dataset, pseudo_dataset])
+                    train_loader = torch.utils.data.DataLoader(new_dataset,
+                                                               batch_size=train_loader.batch_size,
+                                                               shuffle=True,
+                                                               num_workers=12,
+                                                               drop_last=True)
+        if params.soft_label:
+            with torch.no_grad():
+                train_loader, unlabeled_loader = train_loader
+                selected_idx = []
+                soft_labels = []
+                for x, _, idx in unlabeled_loader:
+                    prob, _, soft_label = self.teacher_forward(x)
+                    selected_idx.append(idx[prob > self.threshold])
+                    soft_labels.append(soft_label[prob > self.threshold])
+                selected_idx = torch.cat(selected_idx).detach().cpu().numpy()
+                soft_labels = torch.cat(soft_labels).detach().cpu()
+
+                class ToOneHot:
+                    def __init__(self, dataset, n_class):
+                        self.dataset = dataset
+                        self.n_class = n_class
+
+                    def __getitem__(self, index):
+                        data, label, *_ = self.dataset[index]
+                        label = torch.tensor(label) if not isinstance(label, torch.Tensor) else label
+                        label = F.one_hot(label, self.n_class).to(torch.float)
+                        return data, label
+
+                    def __len__(self):
+                        return len(self.dataset)
+
+                class AddSoftLabel:
+                    def __init__(self, dataset, soft_labels):
+                        self.dataset = dataset
+                        self.soft_labels = soft_labels
+
+                    def __getitem__(self, index):
+                        data, *_ = self.dataset[index]
+                        soft_label = self.soft_labels[index]
+                        return data, soft_label
+
+                    def __len__(self):
+                        return len(self.dataset)
+
+                if len(selected_idx) > 0:
+                    n_pseudo = len(selected_idx)
+                    n_total = len(unlabeled_loader.dataset)
+                    print(f'Select {n_pseudo} ({100.0*n_pseudo/n_total:.2f}%) pesudo samples')
+                    pseudo_dataset = torch.utils.data.Subset(unlabeled_loader.dataset, selected_idx)
+                    pseudo_dataset = AddSoftLabel(pseudo_dataset, soft_labels)
+                    labeled_dataset = train_loader.dataset
+                    labeled_dataset = ToOneHot(labeled_dataset, self.num_class)
+                    new_dataset = torch.utils.data.ConcatDataset([labeled_dataset, pseudo_dataset])
+                    train_loader = torch.utils.data.DataLoader(new_dataset,
+                                                               batch_size=train_loader.batch_size,
+                                                               shuffle=True,
+                                                               num_workers=12,
+                                                               drop_last=True)
+        return train_loader, unlabeled_loader
 
     def get_pseudo_paired_samples(self, train_loader, unlabeled_loader, params):
         with torch.no_grad():
@@ -168,7 +228,7 @@ class BaselineTrain(nn.Module):
                     selected_idx.append(idx[selected])
                     selected_pred.append(y[selected])
                 else:
-                    prob, pred = self.teacher_forward(x)
+                    prob, pred, _ = self.teacher_forward(x)
                     selected = prob > self.threshold
                     selected_idx.append(idx[selected])
                     selected_pred.append(pred[selected])
@@ -214,10 +274,11 @@ class BaselineTrain(nn.Module):
             if self.rot_align:
                 y, rot = y
             if self.pseudo_align:
-                pseudo_idx = y < 0
-                real_idx = y >= 0
-                y[pseudo_idx] = -(y[pseudo_idx] + 1)
-                n_real = sum(real_idx).item()
+                if not params.soft_label:
+                    pseudo_idx = y < 0
+                    real_idx = y >= 0
+                    y[pseudo_idx] = -(y[pseudo_idx] + 1)
+                    n_real = sum(real_idx).item()
             loss, fx = self.forward_loss(x, y)
             avg_loss = avg_loss + loss.item()
 
@@ -272,7 +333,7 @@ class BaselineTrain(nn.Module):
                     sx = sqx.view(n_way, n_shot+n_query, *sqx.shape[1:])[:, :n_shot]
                     sx = sx.contiguous().view(n_way*n_shot, *sx.shape[2:])
                     with torch.no_grad():
-                        weight, _ = self.teacher_forward(sx)
+                        weight, *_ = self.teacher_forward(sx)
                         weight = weight.view(n_way, n_shot).cuda()
                         weight = weight / (weight.sum(dim=-1, keepdim=True) + 1e-6)
                     proto = (sfx * weight.unsqueeze(-1)).sum(dim=1)
@@ -313,7 +374,8 @@ class BaselineTrain(nn.Module):
                 print(print_line)
 
             if self.pseudo_align or self.proto_align:
-                self.update_teacher()
+                if self.momentum < 1:
+                    self.update_teacher()
 
         loss_dict = {'loss': avg_loss / (i + 1)}
         if self.ad_align:

@@ -8,6 +8,7 @@ import time
 import os
 import glob
 import random
+import copy
 
 import configs
 from Logger import Logger
@@ -43,6 +44,10 @@ def train(base_loader, val_loader, model, optimization, start_epoch, stop_epoch,
     max_acc = 0
     ori_base_loader = base_loader
     for epoch in range(start_epoch,stop_epoch):
+        if params.pseudo_align:
+            model.train()
+            base_loader = model.get_pseudo_samples(ori_base_loader, params)
+
         model.train()
         end = time.time()
         loss = model.train_loop(epoch, base_loader,  optimizer, params) #model are called by reference, no need to return
@@ -66,10 +71,6 @@ def train(base_loader, val_loader, model, optimization, start_epoch, stop_epoch,
             outfile = os.path.join(params.checkpoint_dir, '{:d}.tar'.format(epoch))
             torch.save({'epoch':epoch, 'state':model.state_dict()}, outfile)
 
-        if params.pseudo_align:
-            model.train()
-            base_loader = model.get_pseudo_samples(ori_base_loader)
-
     return model
 
 if __name__=='__main__':
@@ -81,6 +82,10 @@ if __name__=='__main__':
     # params.loss_type = 'euclidean'
     # params.ad_align = True
     # params.pseudo_align = True
+    # params.soft_label = True
+    # params.threshold = 0
+    # params.init_teacher = 'checkpoints/DomainNet/painting/ResNet18_baseline/0/80.tar'
+    # params.momentum = 1
     # params.rot_align = False
     # params.proto_align = True
     # params.weight_proto = True
@@ -182,13 +187,13 @@ if __name__=='__main__':
             assert params.num_classes >= 1597, 'class number need to be larger than max label id in base class'
 
         if params.method == 'baseline':
-            model           = BaselineTrain( model_dict[params.model], params.num_classes,
+            model           = BaselineTrain( params, model_dict[params.model], params.num_classes,
                                              ad_align=params.ad_align, ad_loss_weight=params.ad_loss_weight,
                                              pseudo_align=params.pseudo_align, momentum=params.momentum,
                                              threshold=params.threshold, proto_align=params.proto_align,
                                              ada_proto=params.ada_proto, rot_align=params.rot_align)
         elif params.method == 'baseline++':
-            model           = BaselineTrain( model_dict[params.model], params.num_classes, loss_type = params.loss_type,
+            model           = BaselineTrain( params, model_dict[params.model], params.num_classes, loss_type = params.loss_type,
                                              ad_align=params.ad_align, ad_loss_weight=params.ad_loss_weight,
                                              pseudo_align=params.pseudo_align, momentum=params.momentum,
                                              threshold=params.threshold, proto_align=params.proto_align,
@@ -266,6 +271,16 @@ if __name__=='__main__':
     # tmp = torch.load(resume_file)
     # start_epoch = tmp['epoch'] + 1
     # model.load_state_dict(tmp['state'], strict=False)
+
+    if params.pseudo_align and params.init_teacher:
+        tmp = torch.load(params.init_teacher)
+        feature = copy.deepcopy(model.feature)
+        classifier = copy.deepcopy(model.classifier)
+        print(f'load init teacher from {params.init_teacher}')
+        model.load_state_dict(tmp['state'], strict=False)
+        model.init_teacher()
+        model.feature = feature
+        model.classifier = classifier
 
     if params.resume:
         if params.checkpoint:
