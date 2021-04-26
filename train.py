@@ -46,7 +46,10 @@ def train(base_loader, val_loader, model, optimization, start_epoch, stop_epoch,
     for epoch in range(start_epoch,stop_epoch):
         if params.pseudo_align:
             model.train()
-            base_loader = model.get_pseudo_samples(ori_base_loader, params)
+            base_loader = model.get_pseudo_samples(ori_base_loader[:2], params)
+            if params.simclr:
+                base_loader = list(base_loader)
+                base_loader.append(ori_base_loader[-1])
 
         model.train()
         end = time.time()
@@ -77,7 +80,7 @@ if __name__=='__main__':
     params = parse_args('train')
     # DEBUG
     # params.exp = 'debug'
-    # params.gpu = '3'
+    # params.gpu = '7'
     # params.method = 'baseline'
     # params.loss_type = 'euclidean'
     # params.ad_align = True
@@ -86,6 +89,7 @@ if __name__=='__main__':
     # params.threshold = 0
     # params.init_teacher = 'checkpoints/DomainNet/painting/ResNet18_baseline/0/80.tar'
     # params.momentum = 1
+    # params.simclr = True
     # params.rot_align = False
     # params.proto_align = True
     # params.weight_proto = True
@@ -180,6 +184,12 @@ if __name__=='__main__':
                                                                  proportion=params.unlabeled_proportion, with_idx=True,
                                                                  rot=params.rot_align)
             base_loader = [base_loader, unlabeled_loader]
+
+            if params.simclr:
+                simclr_datamgr = SimpleDataManager(image_size, batch_size=params.simclr_bs)
+                simclr_loader = simclr_datamgr.get_data_loader(data_folder=unlabeled_folder, simclr_trans=True,
+                                                               proportion=params.unlabeled_proportion)
+                base_loader.append(simclr_loader)
         
         if params.dataset == 'omniglot':
             assert params.num_classes >= 4112, 'class number need to be larger than max label id in base class'

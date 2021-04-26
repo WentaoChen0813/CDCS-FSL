@@ -71,6 +71,12 @@ class BaselineTrain(nn.Module):
         if rot_align:
             feat_dim = self.feature.final_feat_dim
             self.rot_classifier = nn.Linear(feat_dim, 4)
+        if params.simclr:
+            self.projection_head = nn.Sequential(
+                nn.Linear(self.feature.final_feat_dim, self.feature.final_feat_dim),
+                nn.ReLU(),
+                nn.Linear(self.feature.final_feat_dim, 128)
+            )
 
 
     def init_teacher(self):
@@ -251,6 +257,37 @@ class BaselineTrain(nn.Module):
             if self.rot_align:
                 unlabeled_loader.dataset.rot = True
             return paired_loader
+
+    def info_nce_loss(self, features):
+
+        labels = torch.cat([torch.arange(self.params.simclr_bs) for i in range(2)], dim=0)
+        labels = (labels.unsqueeze(0) == labels.unsqueeze(1)).float()
+        labels = labels.cuda()
+
+        features = F.normalize(features, dim=1)
+
+        similarity_matrix = torch.matmul(features, features.T)
+        # assert similarity_matrix.shape == (
+        #     self.args.n_views * self.args.batch_size, self.args.n_views * self.args.batch_size)
+        # assert similarity_matrix.shape == labels.shape
+
+        # discard the main diagonal from both: labels and similarities matrix
+        mask = torch.eye(labels.shape[0], dtype=torch.bool).cuda()
+        labels = labels[~mask].view(labels.shape[0], -1)
+        similarity_matrix = similarity_matrix[~mask].view(similarity_matrix.shape[0], -1)
+        # assert similarity_matrix.shape == labels.shape
+
+        # select and combine multiple positives
+        positives = similarity_matrix[labels.bool()].view(labels.shape[0], -1)
+
+        # select only the negatives the negatives
+        negatives = similarity_matrix[~labels.bool()].view(similarity_matrix.shape[0], -1)
+
+        logits = torch.cat([positives, negatives], dim=1)
+        labels = torch.zeros(logits.shape[0], dtype=torch.long).cuda()
+
+        logits = logits / self.params.simclr_t
+        return logits, labels
     
     def train_loop(self, epoch, train_loader, optimizer, params=None):
         print_freq = 10
@@ -259,9 +296,14 @@ class BaselineTrain(nn.Module):
         avg_discriminator_loss = 0
         avg_proto_loss = 0
         avg_rot_loss = 0
+        avg_simclr_loss = 0
 
         if self.ad_align or self.pseudo_align:
-            train_loader, unlabeled_loader = train_loader
+            if self.params.simclr:
+                train_loader, unlabeled_loader, simclr_loader = train_loader
+                simclr_iter = iter(simclr_loader)
+            else:
+                train_loader, unlabeled_loader = train_loader
 
         if self.ad_align:
             n_unlabeled = len(unlabeled_loader)
@@ -346,6 +388,20 @@ class BaselineTrain(nn.Module):
                 avg_proto_loss += proto_loss.item()
                 loss += proto_loss
 
+            if self.params.simclr:
+                try:
+                    ux, _ = next(simclr_iter)
+                except:
+                    simclr_iter = iter(simclr_loader)
+                    ux, _ = next(simclr_iter)
+                ux = torch.cat(ux, dim=0).cuda()
+                fux = self.feature(ux)
+                fux = self.projection_head(fux)
+                logits, labels = self.info_nce_loss(fux)
+                simclr_loss = self.loss_fn(logits, labels)
+                avg_simclr_loss += simclr_loss.item()
+                loss += simclr_loss
+
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -371,6 +427,8 @@ class BaselineTrain(nn.Module):
                     print_line += ' | Proto_loss {:f}'.format(avg_proto_loss / (i + 1))
                 if self.rot_align:
                     print_line += ' | Rot_loss {:f}'.format(avg_rot_loss / (i + 1))
+                if self.params.simclr:
+                    print_line += ' | Simclr_loss {:f}'.format(avg_simclr_loss / (i + 1))
                 print(print_line)
 
             if self.pseudo_align or self.proto_align:
@@ -385,6 +443,8 @@ class BaselineTrain(nn.Module):
             loss_dict['proto_loss'] = avg_proto_loss / (i + 1)
         if self.rot_align:
             loss_dict['rot_loss'] = avg_rot_loss / (i + 1)
+        if self.params.simclr:
+            loss_dict['simclr_loss'] = avg_simclr_loss / (i + 1)
         return loss_dict
                      
     def test_loop(self, epoch, val_loader, params):
