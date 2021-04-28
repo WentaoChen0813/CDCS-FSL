@@ -80,7 +80,7 @@ if __name__=='__main__':
     params = parse_args('train')
     # DEBUG
     # params.exp = 'debug'
-    # params.gpu = '7'
+    # params.gpu = '0'
     # params.method = 'baseline'
     # params.loss_type = 'euclidean'
     # params.ad_align = True
@@ -90,6 +90,8 @@ if __name__=='__main__':
     # params.init_teacher = 'checkpoints/DomainNet/painting/ResNet18_baseline/0/80.tar'
     # params.momentum = 1
     # params.simclr = True
+    # params.fixmatch = True
+    # params.threshold = 0.9
     # params.rot_align = False
     # params.proto_align = True
     # params.weight_proto = True
@@ -129,7 +131,7 @@ if __name__=='__main__':
                                        params.split),
                           val_folder
                           ]
-        if params.cross_domain and (params.ad_align or params.pseudo_align):
+        if params.cross_domain and (params.ad_align or params.pseudo_align or params.fixmatch):
             unlabeled_folder = [f'../dataset/DomainNet/{params.cross_domain}/base',
                                 f'../dataset/DomainNet/{params.cross_domain}/val',
                                 f'../dataset/DomainNet/{params.cross_domain}/novel']
@@ -177,12 +179,17 @@ if __name__=='__main__':
         few_shot_params = dict(n_way=params.test_n_way, n_support=params.n_shot)
         val_datamgr = SetDataManager(image_size, n_query = 15, n_episode=params.n_episode, **few_shot_params)
         val_loader = val_datamgr.get_data_loader(data_folder=val_folder, aug=False, fix_seed=True)
-        if params.cross_domain and (params.ad_align or params.pseudo_align):
-            unlabeled_datamgr = SimpleDataManager(image_size, batch_size = params.batch_size)
-            unlabeled_loader = unlabeled_datamgr.get_data_loader(data_folder=unlabeled_folder, aug=params.train_aug,
-                                                                 add_label=True,
-                                                                 proportion=params.unlabeled_proportion, with_idx=True,
-                                                                 rot=params.rot_align)
+        if params.cross_domain and (params.ad_align or params.pseudo_align or params.fixmatch):
+            if not params.fixmatch:
+                unlabeled_datamgr = SimpleDataManager(image_size, batch_size = params.batch_size)
+                unlabeled_loader = unlabeled_datamgr.get_data_loader(data_folder=unlabeled_folder, aug=params.train_aug,
+                                                                     add_label=True,
+                                                                     proportion=params.unlabeled_proportion, with_idx=True,
+                                                                     rot=params.rot_align)
+            else:
+                unlabeled_datamgr = SimpleDataManager(image_size, batch_size=params.batch_size)
+                unlabeled_loader = unlabeled_datamgr.get_data_loader(data_folder=unlabeled_folder, fixmatch_trans=True,
+                                                                     proportion=params.unlabeled_proportion,)
             base_loader = [base_loader, unlabeled_loader]
 
             if params.simclr:

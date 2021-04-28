@@ -43,6 +43,7 @@ def parse_args(script):
         parser.add_argument('--simclr'      , action='store_true')
         parser.add_argument('--simclr_bs'   , default=128, type=int)
         parser.add_argument('--simclr_t'    , default=1, type=float)
+        parser.add_argument('--fixmatch'    , action='store_true')
         parser.add_argument('--proto_align' , action='store_true')
         parser.add_argument('--gt_proto'    , action='store_true')
         parser.add_argument('--weight_proto', action='store_true')

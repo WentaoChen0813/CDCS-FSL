@@ -10,6 +10,7 @@ import torchvision.transforms as transforms
 import data.additional_transforms as add_transforms
 from data.dataset import SimpleDataset, SetDataset, EpisodicBatchSampler, EpisodeDataset
 from abc import abstractmethod
+from data.randaugment import RandAugmentMC
 import os
 
 class TransformLoader:
@@ -107,6 +108,29 @@ class SimCLRTransform:
         return x1, x2
 
 
+class FixMatchTransform:
+    def __init__(self, size):
+        self.weak = transforms.Compose([
+            transforms.RandomHorizontalFlip(),
+            transforms.Resize(int(size*1.15)),
+            transforms.CenterCrop(size)])
+        self.strong = transforms.Compose([
+            transforms.RandomHorizontalFlip(),
+            transforms.Resize(int(size * 1.15)),
+            transforms.CenterCrop(size),
+            RandAugmentMC(n=2, m=10)])
+        self.normalize = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize(mean= [0.485, 0.456, 0.406] , std=[0.229, 0.224, 0.225])
+        ])
+
+    def __call__(self, x):
+        weak = self.weak(x)
+        strong = self.strong(x)
+        return self.normalize(weak), self.normalize(strong)
+
+
+
 class DataManager:
     @abstractmethod
     def get_data_loader(self, data_file, aug):
@@ -152,9 +176,12 @@ class SimpleDataManager(DataManager):
         self.trans_loader = TransformLoader(image_size)
         self.image_size = image_size
 
-    def get_data_loader(self, data_file=None, data_folder=None, add_label=False, aug=None, proportion=1, with_idx=False, rot=False, simclr_trans=False): #parameters that would change on train/val set
+    def get_data_loader(self, data_file=None, data_folder=None, add_label=False, aug=None, proportion=1, with_idx=False,
+                        rot=False, simclr_trans=False, fixmatch_trans=False): #parameters that would change on train/val set
         if simclr_trans:
             transform = SimCLRTransform(self.image_size)
+        elif fixmatch_trans:
+            transform = FixMatchTransform(self.image_size)
         else:
             transform = self.trans_loader.get_composed_transform(aug)
         if data_file is not None:

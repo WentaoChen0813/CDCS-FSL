@@ -297,16 +297,17 @@ class BaselineTrain(nn.Module):
         avg_proto_loss = 0
         avg_rot_loss = 0
         avg_simclr_loss = 0
+        avg_fixmatch_loss = 0
 
-        if self.ad_align or self.pseudo_align:
+        if self.ad_align or self.pseudo_align or self.params.fixmatch:
             if self.params.simclr:
                 train_loader, unlabeled_loader, simclr_loader = train_loader
                 simclr_iter = iter(simclr_loader)
             else:
                 train_loader, unlabeled_loader = train_loader
+            unlabeled_iter = iter(unlabeled_loader)
 
         if self.ad_align:
-            n_unlabeled = len(unlabeled_loader)
             optimizer, discriminator_optim = optimizer
             if self.proto_align:
                 paired_loader = self.get_pseudo_paired_samples(train_loader, unlabeled_loader, params)
@@ -328,9 +329,11 @@ class BaselineTrain(nn.Module):
                 # rot_loss = self.loss_fn(self.rot_classifier(fx), rot.cuda())
 
             if self.ad_align:
-                if i % n_unlabeled == 0:
+                try:
+                    ux, y, _ = next(unlabeled_iter)
+                except:
                     unlabeled_iter = iter(unlabeled_loader)
-                ux, y, _ = next(unlabeled_iter)
+                    ux, y, _ = next(unlabeled_iter)
                 if self.pseudo_align:
                     ux = ux[:n_real]
                 ad_loss, fux = self.discriminator_loss(ux, 1)
@@ -402,6 +405,23 @@ class BaselineTrain(nn.Module):
                 avg_simclr_loss += simclr_loss.item()
                 loss += simclr_loss
 
+            if self.params.fixmatch:
+                try:
+                    ux, *_ = next(unlabeled_iter)
+                except:
+                    unlabeled_iter = iter(unlabeled_loader)
+                    ux, *_ = next(unlabeled_iter)
+                with torch.no_grad():
+                    pred = self.forward(ux[0])
+                score = self.forward(ux[1])
+                pred = F.softmax(pred, dim=-1)
+                pseudo_label = pred.max(dim=-1)[1].detach()
+                confidence = pred.max(dim=-1)[0].detach()
+                mask = confidence.ge(self.params.threshold).float()
+                fixmatch_loss = (F.cross_entropy(score, pseudo_label, reduction='none') * mask).mean()
+                avg_fixmatch_loss += fixmatch_loss.item()
+                loss += fixmatch_loss
+
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -429,6 +449,8 @@ class BaselineTrain(nn.Module):
                     print_line += ' | Rot_loss {:f}'.format(avg_rot_loss / (i + 1))
                 if self.params.simclr:
                     print_line += ' | Simclr_loss {:f}'.format(avg_simclr_loss / (i + 1))
+                if self.params.fixmatch:
+                    print_line += ' | Fixmatch_loss {:f}'.format(avg_fixmatch_loss / (i + 1))
                 print(print_line)
 
             if self.pseudo_align or self.proto_align:
@@ -445,6 +467,8 @@ class BaselineTrain(nn.Module):
             loss_dict['rot_loss'] = avg_rot_loss / (i + 1)
         if self.params.simclr:
             loss_dict['simclr_loss'] = avg_simclr_loss / (i + 1)
+        if self.params.fixmatch:
+            loss_dict['fixmatch_loss'] = avg_fixmatch_loss / (i + 1)
         return loss_dict
                      
     def test_loop(self, epoch, val_loader, params):
