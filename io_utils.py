@@ -38,12 +38,26 @@ def parse_args(script):
         parser.add_argument('--ad_loss_weight', default=0.001, type=float)
         parser.add_argument('--rot_align'   , action='store_true')
         parser.add_argument('--pseudo_align', action='store_true')
+        parser.add_argument('--target_trans', default='none', choices=['none', 'randaug'])
         parser.add_argument('--init_teacher', default='')
+        parser.add_argument('--init_student', default='none', choices=['none', 'feature', 'all'])
         parser.add_argument('--soft_label'  , action='store_true')
         parser.add_argument('--simclr'      , action='store_true')
         parser.add_argument('--simclr_bs'   , default=128, type=int)
         parser.add_argument('--simclr_t'    , default=1, type=float)
+        parser.add_argument('--simclr_prob' , action='store_true')
         parser.add_argument('--fixmatch'    , action='store_true')
+        parser.add_argument('--fixmatch_bs' , default=128, type=int)
+        parser.add_argument('--fixmatch_lw' , default=1, type=float)
+        parser.add_argument('--fixmatch_gt' , action='store_true')
+        parser.add_argument('--fixmatch_anchor', default=1, type=int)
+        parser.add_argument('--distribution_align', action='store_true')
+        parser.add_argument('--distribution_m', default=0.99, type=float)
+        parser.add_argument('--classcontrast', action='store_true')
+        parser.add_argument('--classcontrast_fn', default='dot', choices=['dot', 'kl'])
+        parser.add_argument('--classcontrast_th', default=0.5, type=float)
+        parser.add_argument('--classcontrast_t', default=1, type=float)
+        parser.add_argument('--init_model'  , default='')
         parser.add_argument('--proto_align' , action='store_true')
         parser.add_argument('--gt_proto'    , action='store_true')
         parser.add_argument('--weight_proto', action='store_true')
@@ -93,7 +107,7 @@ def get_resume_file(checkpoint_dir, save_iter=None):
         return get_assigned_file(checkpoint_dir, save_iter)
 
 
-def get_best_file(checkpoint_dir):    
+def get_best_file(checkpoint_dir):
     best_file = os.path.join(checkpoint_dir, 'best_model.tar')
     if os.path.isfile(best_file):
         return best_file

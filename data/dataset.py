@@ -186,7 +186,12 @@ class EpisodeDataset:
                     images.append(image)
                     labels.append(label)
                 cl_idx = list(self.que_cl_idx[cl])
-                idx = random.sample(cl_idx, k=self.n_query)
+                if len(cl_idx) > self.n_query:
+                    idx = random.sample(cl_idx, k=self.n_query)
+                else:
+                    m, n = int(self.n_query//len(cl_idx)), int(self.n_query % len(cl_idx))
+                    idx = cl_idx * m
+                    idx.extend(cl_idx[:n])
                 for i in idx:
                     image, label = self.query_dataset[i]
                     images.append(image)
@@ -266,7 +271,7 @@ class PseudoPairedSetDataset:
 class SubDataset:
     def __init__(self, sub_meta, cl, transform=transforms.ToTensor(), target_transform=identity):
         self.sub_meta = sub_meta
-        self.cl = cl 
+        self.cl = cl
         self.transform = transform
         self.target_transform = target_transform
 
