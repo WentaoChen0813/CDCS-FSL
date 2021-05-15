@@ -100,6 +100,7 @@ if __name__ == '__main__':
     # params.fixmatch_anchor = 2
     # params.classcontrast = True
     # params.classcontrast_fn = 'kl'
+    # params.pseudomix = True
     # params.rot_align = False
     # params.proto_align = True
     # params.weight_proto = True
@@ -187,12 +188,13 @@ if __name__ == '__main__':
 
     if params.method in ['baseline', 'baseline++']:
         base_datamgr = SimpleDataManager(image_size, batch_size=params.batch_size)
-        base_loader = base_datamgr.get_data_loader(data_folder=base_folder, aug=params.train_aug, rot=params.rot_align)
+        base_loader = base_datamgr.get_data_loader(data_folder=base_folder, aug=params.train_aug, rot=params.rot_align, drop_last=True)
         few_shot_params = dict(n_way=params.test_n_way, n_support=params.n_shot)
         val_datamgr = SetDataManager(image_size, n_query=15, n_episode=params.n_episode, **few_shot_params)
         val_loader = val_datamgr.get_data_loader(data_folder=val_folder, aug=False, fix_seed=True)
         if params.cross_domain and (
-                params.ad_align or params.pseudo_align or params.proto_align or params.fixmatch or params.classcontrast):
+                params.ad_align or params.pseudo_align or params.proto_align or params.fixmatch or params.classcontrast
+                or params.pseudomix):
             if params.fixmatch:
                 unlabeled_datamgr = SimpleDataManager(image_size, batch_size=params.fixmatch_bs)
                 unlabeled_loader = unlabeled_datamgr.get_data_loader(data_folder=unlabeled_folder, fixmatch_trans=True,
@@ -220,7 +222,7 @@ if __name__ == '__main__':
                 simclr_loader = simclr_datamgr.get_data_loader(data_folder=unlabeled_folder, simclr_trans=True,
                                                                proportion=params.unlabeled_proportion)
                 base_loader.append(simclr_loader)
-            if params.pseudo_align and params.classcontrast:
+            if (params.pseudo_align or params.pseudomix) and params.classcontrast:
                 unlabeled_datamgr = SimpleDataManager(image_size, batch_size=params.batch_size)
                 unlabeled_loader = unlabeled_datamgr.get_data_loader(data_folder=unlabeled_folder, aug=params.train_aug,
                                                                      add_label=True,
@@ -319,7 +321,7 @@ if __name__ == '__main__':
         tmp = torch.load(params.init_model)
         model.load_state_dict(tmp['state'], strict=False)
 
-    if params.pseudo_align and params.init_teacher:
+    if (params.pseudo_align or params.pseudomix) and params.init_teacher:
         tmp = torch.load(params.init_teacher)
         feature = copy.deepcopy(model.feature)
         classifier = copy.deepcopy(model.classifier)

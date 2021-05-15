@@ -46,7 +46,7 @@ class BaselineTrain(nn.Module):
             )
         self.pseudo_align = pseudo_align
         self.proto_align = proto_align
-        if pseudo_align or proto_align:
+        if pseudo_align or proto_align or params.pseudomix:
             self.momentum = momentum
             self.threshold = threshold
             self.teacher_feature = model_func()
@@ -232,6 +232,43 @@ class BaselineTrain(nn.Module):
                                                                drop_last=True)
         return train_loader, unlabeled_loader
 
+    def get_pseudo_loader(self, unlabeled_loader):
+        with torch.no_grad():
+            selected_y = []
+            selected_idx = []
+            for x, _, idx in unlabeled_loader:
+                prob, pred, _ = self.teacher_forward(x)
+                selected_idx.append(idx[prob > self.threshold])
+                selected_y.append(pred[prob > self.threshold])
+            selected_idx = torch.cat(selected_idx).detach().cpu().numpy()
+            selected_y = torch.cat(selected_y).detach().cpu().numpy()
+
+            class NewDataset:
+                def __init__(self, dataset, label):
+                    self.dataset = dataset
+                    self.label = label
+
+                def __getitem__(self, index):
+                    data, *_ = self.dataset[index]
+                    label = self.label[index]
+                    return data, label
+
+                def __len__(self):
+                    return len(self.dataset)
+
+            if len(selected_y) > 0:
+                n_pseudo = len(selected_y)
+                n_total = len(unlabeled_loader.dataset)
+                print(f'Select {n_pseudo} ({100.0 * n_pseudo / n_total:.2f}%) pesudo samples')
+                pseudo_dataset = torch.utils.data.Subset(unlabeled_loader.dataset, selected_idx)
+                pseudo_dataset = NewDataset(pseudo_dataset, selected_y)
+                new_loader =  torch.utils.data.DataLoader(pseudo_dataset,
+                                                           batch_size=unlabeled_loader.batch_size,
+                                                           shuffle=True,
+                                                           num_workers=12,
+                                                           drop_last=True)
+                return new_loader
+
     def get_pseudo_paired_samples(self, train_loader, unlabeled_loader, params):
         with torch.no_grad():
             selected_idx = []
@@ -299,7 +336,18 @@ class BaselineTrain(nn.Module):
         logits = logits / self.params.simclr_t
         return logits, labels
 
-    def train_loop(self, epoch, train_loader, optimizer, params=None):
+    def mixup(self, x1, x2, y1, y2, alpha):
+        beta = torch.distributions.beta.Beta(alpha, alpha)
+        lam = beta.sample([x1.shape[0]]).to(device=x1.device)
+        lam = torch.max(lam, 1. - lam)
+        lam_expanded = lam.view([-1] + [1] * (x1.dim() - 1))
+        x = lam_expanded * x1 + (1. - lam_expanded) * x2
+        y1 = F.one_hot(y1, self.num_class).float()
+        y2 = F.one_hot(y2, self.num_class).float()
+        y = lam.unsqueeze(-1) * y1 + (1 - lam.unsqueeze(-1)) * y2
+        return x, y
+
+    def train_loop(self, epoch, base_loader, optimizer, params=None):
         print_freq = 10
         avg_loss = 0
         avg_ad_loss = 0
@@ -310,15 +358,20 @@ class BaselineTrain(nn.Module):
         avg_fixmatch_loss = 0
         avg_classcontrast_loss = 0
 
-        if self.ad_align or self.pseudo_align or self.proto_align or self.params.fixmatch or self.params.classcontrast:
+        if self.ad_align or self.pseudo_align or self.proto_align or self.params.fixmatch or self.params.classcontrast or self.params.pseudomix:
             if self.params.simclr:
-                train_loader, unlabeled_loader, simclr_loader = train_loader
+                train_loader, unlabeled_loader, simclr_loader = base_loader
                 simclr_iter = iter(simclr_loader)
-            elif self.params.pseudo_align and self.params.classcontrast:
-                train_loader, _, unlabeled_loader = train_loader
+            elif (self.params.pseudo_align or self.params.pseudomix) and self.params.classcontrast:
+                train_loader, pseudo_loader, unlabeled_loader = base_loader
             else:
-                train_loader, unlabeled_loader = train_loader
+                train_loader, unlabeled_loader = base_loader
             unlabeled_iter = iter(unlabeled_loader)
+
+        if params.pseudomix and epoch == 0:
+            pseudo_loader = self.get_pseudo_loader(pseudo_loader)
+            pseudo_iter = iter(pseudo_loader)
+            base_loader[1] = pseudo_loader
 
         if self.ad_align:
             optimizer, discriminator_optim = optimizer
@@ -335,7 +388,18 @@ class BaselineTrain(nn.Module):
                     real_idx = y >= 0
                     y[pseudo_idx] = -(y[pseudo_idx] + 1)
                     n_real = sum(real_idx).item()
-            loss, fx = self.forward_loss(x, y)
+            if self.params.pseudomix:
+                try:
+                    ux, uy, *_ = next(pseudo_iter)
+                except:
+                    pseudo_iter = iter(pseudo_loader)
+                    ux, uy, *_ = next(pseudo_iter)
+                x, y = self.mixup(x.cuda(), ux.cuda(), y.cuda(), uy.cuda(), self.params.pseudomix_alpha)
+                fx = self.feature(x)
+                logit = self.classifier(fx)
+                loss = F.kl_div(F.log_softmax(logit, -1), y, reduction='batchmean')
+            else:
+                loss, fx = self.forward_loss(x, y)
             avg_loss = avg_loss + loss.item()
 
             # if self.rot_align:

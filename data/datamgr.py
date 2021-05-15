@@ -190,7 +190,7 @@ class SimpleDataManager(DataManager):
 
     def get_data_loader(self, data_file=None, data_folder=None, add_label=False, aug=None, proportion=1, with_idx=False,
                         rot=False, simclr_trans=False, fixmatch_trans=False, fixmatch_anchor=1,
-                        fixmatch_weak=True):  # parameters that would change on train/val set
+                        fixmatch_weak=True, drop_last=False):  # parameters that would change on train/val set
         if simclr_trans:
             transform = SimCLRTransform(self.image_size)
         elif fixmatch_trans:
@@ -234,7 +234,7 @@ class SimpleDataManager(DataManager):
             dataset = DatasetWithIndex(dataset)
         if rot:
             dataset = DatasetWithRotation(dataset)
-        data_loader_params = dict(batch_size=self.batch_size, shuffle=True, num_workers=12)
+        data_loader_params = dict(batch_size=self.batch_size, shuffle=True, num_workers=12, drop_last=drop_last)
         if simclr_trans:
             data_loader_params['drop_last'] = True
         data_loader = torch.utils.data.DataLoader(dataset, **data_loader_params)
