@@ -336,16 +336,46 @@ class BaselineTrain(nn.Module):
         logits = logits / self.params.simclr_t
         return logits, labels
 
-    def mixup(self, x1, x2, y1, y2, alpha):
+    def mixup(self, x1, x2, y1, y2, alpha, bi=False):
         beta = torch.distributions.beta.Beta(alpha, alpha)
         lam = beta.sample([x1.shape[0]]).to(device=x1.device)
-        lam = torch.max(lam, 1. - lam)
+        if not bi:
+            lam = torch.max(lam, 1. - lam)
         lam_expanded = lam.view([-1] + [1] * (x1.dim() - 1))
         x = lam_expanded * x1 + (1. - lam_expanded) * x2
         y1 = F.one_hot(y1, self.num_class).float()
         y2 = F.one_hot(y2, self.num_class).float()
         y = lam.unsqueeze(-1) * y1 + (1 - lam.unsqueeze(-1)) * y2
         return x, y
+
+    def cutmix(self, x1, x2, y1, y2, alpha):
+        beta = torch.distributions.beta.Beta(alpha, alpha)
+        lam = beta.sample().to(device=x1.device)
+        lam = torch.max(lam, 1. - lam)
+        (bbx1, bby1, bbx2, bby2), lam = self.rand_bbox(x1.shape[-2:], lam)
+        x1[..., bbx1:bbx2, bby1:bby2] = x2[..., bbx1:bbx2, bby1:bby2]
+        y1 = F.one_hot(y1, self.num_class).float()
+        y2 = F.one_hot(y2, self.num_class).float()
+        y = lam.unsqueeze(-1) * y1 + (1 - lam.unsqueeze(-1)) * y2
+        return x1, y
+
+    def rand_bbox(self, size, lam):
+        W, H = size
+        cut_rat = (1. - lam).sqrt()
+        cut_w = (W * cut_rat).to(torch.long)
+        cut_h = (H * cut_rat).to(torch.long)
+
+        cx = torch.zeros_like(cut_w, dtype=cut_w.dtype).random_(0, W)
+        cy = torch.zeros_like(cut_h, dtype=cut_h.dtype).random_(0, H)
+
+        bbx1 = (cx - cut_w // 2).clamp(0, W)
+        bby1 = (cy - cut_h // 2).clamp(0, H)
+        bbx2 = (cx + cut_w // 2).clamp(0, W)
+        bby2 = (cy + cut_h // 2).clamp(0, H)
+
+        new_lam = 1. - (bbx2 - bbx1).to(lam.dtype) * (bby2 - bby1).to(lam.dtype) / (W * H)
+
+        return (bbx1, bby1, bbx2, bby2), new_lam
 
     def train_loop(self, epoch, base_loader, optimizer, params=None):
         print_freq = 10
@@ -364,9 +394,12 @@ class BaselineTrain(nn.Module):
                 simclr_iter = iter(simclr_loader)
             elif (self.params.pseudo_align or self.params.pseudomix) and self.params.classcontrast:
                 train_loader, pseudo_loader, unlabeled_loader = base_loader
+            elif self.params.pseudomix:
+                train_loader, pseudo_loader = base_loader
             else:
                 train_loader, unlabeled_loader = base_loader
-            unlabeled_iter = iter(unlabeled_loader)
+        else:
+            train_loader = base_loader
 
         if params.pseudomix and epoch == 0:
             pseudo_loader = self.get_pseudo_loader(pseudo_loader)
@@ -394,7 +427,10 @@ class BaselineTrain(nn.Module):
                 except:
                     pseudo_iter = iter(pseudo_loader)
                     ux, uy, *_ = next(pseudo_iter)
-                x, y = self.mixup(x.cuda(), ux.cuda(), y.cuda(), uy.cuda(), self.params.pseudomix_alpha)
+                if self.params.pseudomix_fn == 'mixup':
+                    x, y = self.mixup(x.cuda(), ux.cuda(), y.cuda(), uy.cuda(), self.params.pseudomix_alpha, self.params.pseudomix_bi)
+                elif self.params.pseudomix_fn == 'cutmix':
+                    x, y = self.cutmix(x.cuda(), ux.cuda(), y.cuda(), uy.cuda(), self.params.pseudomix_alpha)
                 fx = self.feature(x)
                 logit = self.classifier(fx)
                 loss = F.kl_div(F.log_softmax(logit, -1), y, reduction='batchmean')

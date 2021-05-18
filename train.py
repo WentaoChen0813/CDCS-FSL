@@ -81,7 +81,7 @@ if __name__ == '__main__':
     params = parse_args('train')
     # DEBUG
     # params.exp = 'debug'
-    # params.gpu = '0'
+    # params.gpu = '7'
     # params.method = 'baseline'
     # params.loss_type = 'euclidean'
     # params.ad_align = True
@@ -101,15 +101,16 @@ if __name__ == '__main__':
     # params.classcontrast = True
     # params.classcontrast_fn = 'kl'
     # params.pseudomix = True
+    # params.pseudomix_fn = 'cutmix'
     # params.rot_align = False
     # params.proto_align = True
     # params.weight_proto = True
     # params.ada_proto = False
     # params.batch_size = 128
     # params.resume = True
-    # params.checkpoint = 'checkpoints/DomainNet/painting/ResNet18_baseline/pseudo_align_th0.5_momentum0.99'
+    # params.checkpoint = 'checkpoints/DomainNet/painting/ResNet18_baseline/pseudomix_th0.9_a0.7_classcontrast_th0.5_fndot_t0.3'
     # params.checkpoint = 'checkpoints/DomainNet/painting/ResNet18_baseline/0'
-    # params.save_iter = 0
+    # params.save_iter = 30
     # params.test = True
     # params.cross_domain = 'real'
     # params.split = 'base'
@@ -144,8 +145,10 @@ if __name__ == '__main__':
                           val_folder,
                           # val_folder
                           ]
+            if params.reverse_sq:
+                val_folder = val_folder[::-1]
         if params.cross_domain and (
-                params.ad_align or params.pseudo_align or params.proto_align or params.fixmatch or params.classcontrast):
+                params.ad_align or params.pseudo_align or params.pseudomix or params.proto_align or params.fixmatch or params.classcontrast):
             unlabeled_folder = [f'../dataset/DomainNet/{params.cross_domain}/base',
                                 f'../dataset/DomainNet/{params.cross_domain}/val',
                                 f'../dataset/DomainNet/{params.cross_domain}/novel']

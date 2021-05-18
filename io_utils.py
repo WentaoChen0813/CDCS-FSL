@@ -55,10 +55,12 @@ def parse_args(script):
         parser.add_argument('--distribution_m', default=0.99, type=float)
         parser.add_argument('--classcontrast', action='store_true')
         parser.add_argument('--classcontrast_fn', default='dot', choices=['dot', 'kl'])
-        parser.add_argument('--classcontrast_th', default=0.5, type=float)
-        parser.add_argument('--classcontrast_t', default=1, type=float)
+        parser.add_argument('--classcontrast_th', default=0.3, type=float)
+        parser.add_argument('--classcontrast_t', default=0.3, type=float)
         parser.add_argument('--pseudomix'   , action='store_true')
-        parser.add_argument('--pseudomix_alpha', default=1, type=float)
+        parser.add_argument('--pseudomix_alpha', default=0.7, type=float)
+        parser.add_argument('--pseudomix_fn', default='mixup', choices=['mixup', 'cutmix'])
+        parser.add_argument('--pseudomix_bi', action='store_true')
         parser.add_argument('--init_model'  , default='')
         parser.add_argument('--proto_align' , action='store_true')
         parser.add_argument('--gt_proto'    , action='store_true')
@@ -73,6 +75,7 @@ def parse_args(script):
         parser.add_argument('--warmup'      , action='store_true', help='continue from baseline, neglected if resume is true') #never used in the paper
         # test
         parser.add_argument('--test', action='store_true')
+        parser.add_argument('--reverse_sq', action='store_true')
         parser.add_argument('--n_episode', default=600, type=int)
         parser.add_argument('--split', default='novel',            help='base/val/novel')  # default novel, but you can also test base/val class accuracy if you want
         parser.add_argument('--resume', action='store_true',       help='continue from previous trained model with largest epoch')
