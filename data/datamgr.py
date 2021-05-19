@@ -113,7 +113,7 @@ class SimCLRTransform:
 
 
 class FixMatchTransform:
-    def __init__(self, size=224, n_anchor=1, has_weak=True):
+    def __init__(self, size=224, n_anchor=1, has_weak=True, augtype='fixmatch'):
         self.weak = transforms.Compose([
             transforms.RandomHorizontalFlip(),
             transforms.Resize(int(size * 1.15)),
@@ -122,7 +122,7 @@ class FixMatchTransform:
             transforms.RandomHorizontalFlip(),
             transforms.Resize(int(size * 1.15)),
             transforms.CenterCrop(size),
-            RandAugmentMC(n=2, m=10)])
+            RandAugmentMC(n=2, m=10, augtype=augtype)])
         self.normalize = transforms.Compose([
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
@@ -190,11 +190,11 @@ class SimpleDataManager(DataManager):
 
     def get_data_loader(self, data_file=None, data_folder=None, add_label=False, aug=None, proportion=1, with_idx=False,
                         rot=False, simclr_trans=False, fixmatch_trans=False, fixmatch_anchor=1,
-                        fixmatch_weak=True, drop_last=False):  # parameters that would change on train/val set
+                        fixmatch_weak=True, augtype='fixmatch', drop_last=False):  # parameters that would change on train/val set
         if simclr_trans:
             transform = SimCLRTransform(self.image_size)
         elif fixmatch_trans:
-            transform = FixMatchTransform(self.image_size, fixmatch_anchor, fixmatch_weak)
+            transform = FixMatchTransform(self.image_size, fixmatch_anchor, fixmatch_weak, augtype)
         else:
             transform = self.trans_loader.get_composed_transform(aug)
         if data_file is not None:

@@ -208,6 +208,7 @@ if __name__ == '__main__':
                 unlabeled_datamgr = SimpleDataManager(image_size, batch_size=params.batch_size)
                 unlabeled_loader = unlabeled_datamgr.get_data_loader(data_folder=unlabeled_folder,
                                                                      fixmatch_trans=True,
+                                                                     augtype=params.classcontrast_augtype,
                                                                      # fixmatch_anchor=2, fixmatch_weak=False, simclr_trans=True,
                                                                      add_label=True,
                                                                      proportion=params.unlabeled_proportion, )

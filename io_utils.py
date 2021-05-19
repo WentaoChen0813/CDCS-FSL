@@ -57,6 +57,7 @@ def parse_args(script):
         parser.add_argument('--classcontrast_fn', default='dot', choices=['dot', 'kl'])
         parser.add_argument('--classcontrast_th', default=0.3, type=float)
         parser.add_argument('--classcontrast_t', default=0.3, type=float)
+        parser.add_argument('--classcontrast_augtype', default='fixmatch', choices=['fixmatch', 'geometry', 'geometry+crop'])
         parser.add_argument('--pseudomix'   , action='store_true')
         parser.add_argument('--pseudomix_alpha', default=0.7, type=float)
         parser.add_argument('--pseudomix_fn', default='mixup', choices=['mixup', 'cutmix'])
