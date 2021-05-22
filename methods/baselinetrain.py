@@ -46,7 +46,7 @@ class BaselineTrain(nn.Module):
             )
         self.pseudo_align = pseudo_align
         self.proto_align = proto_align
-        if pseudo_align or proto_align or params.pseudomix:
+        if pseudo_align or proto_align or params.pseudomix or params.fixmatch_teacher:
             self.momentum = momentum
             self.threshold = threshold
             self.teacher_feature = model_func()
@@ -434,9 +434,40 @@ class BaselineTrain(nn.Module):
                 fx = self.feature(x)
                 logit = self.classifier(fx)
                 loss = F.kl_div(F.log_softmax(logit, -1), y, reduction='batchmean')
+                avg_loss = avg_loss + loss.item()
+            elif self.params.fixmatch_1batch:
+                try:
+                    ux, uy, *_ = next(unlabeled_iter)
+                except:
+                    unlabeled_iter = iter(unlabeled_loader)
+                    ux, uy, *_ = next(unlabeled_iter)
+                ux = [x.cuda() for x in ux]
+                with torch.no_grad():
+                    if self.params.fixmatch_teacher:
+                        pred = self.teacher_classifier(self.teacher_feature(ux[0]))
+                    else:
+                        pred = self.classifier(self.feature((ux[0])))
+                    pred = F.softmax(pred, dim=-1)
+                    pseudo_label = pred.max(dim=-1)[1].detach()
+                    confidence = pred.max(dim=-1)[0].detach()
+                    mask = confidence.ge(self.params.threshold)
+                x, y = x.cuda(), y.cuda()
+                ux, pseudo_label = ux[1][mask], pseudo_label[mask]
+                x_ux = torch.cat([x, ux], 0)
+                fx_fux = self.feature(x_ux)
+                fx, fux = fx_fux[:x.shape[0]], fx_fux[x.shape[0]:]
+                loss = self.loss_fn(self.classifier(fx), y)
+                avg_loss = avg_loss + loss.item()
+                if pseudo_label.shape[0] > 0:
+                    fixmatch_loss = F.cross_entropy(self.classifier(fux), pseudo_label)
+                    fixmatch_loss *= (mask.float().sum()) / mask.shape[0]
+                else:
+                    fixmatch_loss = torch.tensor(0.).cuda()
+                avg_fixmatch_loss += fixmatch_loss.item()
+                loss += self.params.fixmatch_lw * fixmatch_loss
             else:
                 loss, fx = self.forward_loss(x, y)
-            avg_loss = avg_loss + loss.item()
+                avg_loss = avg_loss + loss.item()
 
             # if self.rot_align:
             # rot_loss = self.loss_fn(self.rot_classifier(fx), rot.cuda())
@@ -530,7 +561,7 @@ class BaselineTrain(nn.Module):
                 avg_simclr_loss += simclr_loss.item()
                 loss += simclr_loss
 
-            if self.params.fixmatch:
+            if self.params.fixmatch and not self.params.fixmatch_1batch:
                 try:
                     ux, uy, *_ = next(unlabeled_iter)
                 except:
@@ -542,10 +573,12 @@ class BaselineTrain(nn.Module):
                 else:
                     uxs = torch.cat(ux[1:])
                 if not self.params.fixmatch_gt:
-                    fuxw = self.feature(ux[0])
-                    scorew = self.classifier(fuxw)
                     with torch.no_grad():
-                        pred = F.softmax(scorew, dim=-1)
+                        if self.params.fixmatch_teacher:
+                            pred = self.teacher_classifier(self.teacher_feature(ux[0]))
+                        else:
+                            pred = self.classifier(self.feature((ux[0])))
+                        pred = F.softmax(pred, dim=-1)
                         if self.params.distribution_align:
                             with torch.no_grad():
                                 self.pred_distribution = self.params.distribution_m * self.pred_distribution + \
@@ -558,7 +591,10 @@ class BaselineTrain(nn.Module):
                         if self.params.fixmatch_anchor > 1:
                             pseudo_label = pseudo_label.repeat(self.params.fixmatch_anchor)
                             mask = mask.repeat(self.params.fixmatch_anchor)
-                    score = self.classifier(self.feature(uxs))
+                    if self.params.fixmatch_noaug:
+                        score = self.classifier(self.feature(ux[0]))
+                    else:
+                        score = self.classifier(self.feature(uxs))
                     fixmatch_loss = (F.cross_entropy(score, pseudo_label, reduction='none') * mask).mean()
                 else:
                     if self.params.fixmatch_anchor > 1:
@@ -632,9 +668,10 @@ class BaselineTrain(nn.Module):
                     print_line += ' | Classcontrast_loss {:f}'.format(avg_classcontrast_loss / (i + 1))
                 print(print_line)
 
-            if self.pseudo_align or self.proto_align:
+            if self.pseudo_align or self.proto_align or self.params.fixmatch_teacher:
                 if self.momentum < 1:
-                    self.update_teacher()
+                    if self.params.update_teacher == 'step' or (self.params.update_teacher == 'epoch' and i == len(train_loader)-1):
+                        self.update_teacher()
 
         loss_dict = {'loss': avg_loss / (i + 1)}
         if self.ad_align:

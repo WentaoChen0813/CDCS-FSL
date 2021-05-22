@@ -81,19 +81,23 @@ if __name__ == '__main__':
     params = parse_args('train')
     # DEBUG
     # params.exp = 'debug'
-    # params.gpu = '7'
+    # params.gpu = '0'
+    # params.cross_domain = 'painting'
     # params.method = 'baseline'
     # params.loss_type = 'euclidean'
     # params.ad_align = True
     # params.pseudo_align = True
     # params.soft_label = True
-    # params.threshold = 0
+    # params.threshold = 0.5
     # params.init_teacher = 'checkpoints/DomainNet/painting/ResNet18_baseline/0/80.tar'
-    # params.momentum = 1
+    # params.momentum = 0
     # params.target_trans = 'randaug'
     # params.simclr = True
     # params.fixmatch = True
     # params.threshold = 0.5
+    # params.fixmatch_teacher = True
+    # params.fixmatch_noaug = True
+    # params.update_teacher = 'epoch'
     # params.distribution_align = True
     # params.distribution_m = 1
     # params.fixmatch_gt = True
@@ -108,9 +112,9 @@ if __name__ == '__main__':
     # params.ada_proto = False
     # params.batch_size = 128
     # params.resume = True
-    # params.checkpoint = 'checkpoints/DomainNet/painting/ResNet18_baseline/pseudomix_th0.9_a0.7_classcontrast_th0.5_fndot_t0.3'
     # params.checkpoint = 'checkpoints/DomainNet/painting/ResNet18_baseline/0'
-    # params.save_iter = 30
+    # params.checkpoint = 'checkpoints/DomainNet/painting/ResNet18_baseline/0'
+    # params.save_iter = 0
     # params.test = True
     # params.cross_domain = 'real'
     # params.split = 'base'
@@ -325,7 +329,7 @@ if __name__ == '__main__':
         tmp = torch.load(params.init_model)
         model.load_state_dict(tmp['state'], strict=False)
 
-    if (params.pseudo_align or params.pseudomix) and params.init_teacher:
+    if (params.pseudo_align or params.pseudomix or params.fixmatch_teacher) and params.init_teacher:
         tmp = torch.load(params.init_teacher)
         feature = copy.deepcopy(model.feature)
         classifier = copy.deepcopy(model.classifier)
@@ -420,23 +424,28 @@ if __name__ == '__main__':
     # exit()
 
     # target_acc = []
-    # save_iters = [-1] + [x for x in range(0, 100, 10)]
-    # for save_iter in save_iters:
-    #     checkpoint_dir = params.checkpoint
-    #     resume_file = get_resume_file(checkpoint_dir, save_iter)
-    #     tmp = torch.load(resume_file)
-    #     model.load_state_dict(tmp['state'], strict=False)
-    #     acc_fc = 0.
-    #     with torch.no_grad():
-    #         for x, y, *_ in unlabeled_loader:
-    #             x, y = x.cuda(), y.cuda()
-    #             fx = model.feature(x)
-    #             score = model.classifier(fx)
-    #             pred = score.max(dim=-1)[1]
-    #             acc_fc += float((pred == y).sum().item()) / pred.shape[0]
-    #     acc_fc /= len(unlabeled_loader)
-    #     target_acc.append(acc_fc)
-    #     print(f'target_acc: {target_acc}')
+    # save_iters = [-1] #+ [x for x in range(0, 40, 10)]
+    # for mode in ['train', 'eval']:
+    #     for save_iter in save_iters:
+    #         checkpoint_dir = params.checkpoint
+    #         resume_file = get_resume_file(checkpoint_dir, save_iter)
+    #         tmp = torch.load(resume_file)
+    #         model.load_state_dict(tmp['state'], strict=False)
+    #         if mode == 'train':
+    #             model.train()
+    #         else:
+    #             model.eval()
+    #         acc_fc = 0.
+    #         with torch.no_grad():
+    #             for x, y, *_ in unlabeled_loader:
+    #                 x, y = x.cuda(), y.cuda()
+    #                 fx = model.feature(x)
+    #                 score = model.classifier(fx)
+    #                 pred = score.max(dim=-1)[1]
+    #                 acc_fc += float((pred == y).sum().item()) / pred.shape[0]
+    #         acc_fc /= len(unlabeled_loader)
+    #         target_acc.append(acc_fc)
+    #         print(f'target_acc: {target_acc}')
     # exit()
 
     if params.resume:
