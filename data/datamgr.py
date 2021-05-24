@@ -188,7 +188,7 @@ class SimpleDataManager(DataManager):
         self.trans_loader = TransformLoader(image_size)
         self.image_size = image_size
 
-    def get_data_loader(self, data_file=None, data_folder=None, add_label=False, aug=None, proportion=1, with_idx=False,
+    def get_data_loader(self, data_folder=None, add_label=False, aug=None, with_idx=False,
                         rot=False, simclr_trans=False, fixmatch_trans=False, fixmatch_anchor=1,
                         fixmatch_weak=True, augtype='fixmatch', drop_last=False):  # parameters that would change on train/val set
         if simclr_trans:
@@ -197,9 +197,7 @@ class SimpleDataManager(DataManager):
             transform = FixMatchTransform(self.image_size, fixmatch_anchor, fixmatch_weak, augtype)
         else:
             transform = self.trans_loader.get_composed_transform(aug)
-        if data_file is not None:
-            dataset = SimpleDataset(data_file, transform)
-        elif not isinstance(data_folder, list):
+        if not isinstance(data_folder, list):
             dataset = torchvision.datasets.ImageFolder(data_folder, transform)
         else:
             class AddLabel:
@@ -220,16 +218,6 @@ class SimpleDataManager(DataManager):
                 n_class += len(dataset[-1].classes)
 
             dataset = torch.utils.data.ConcatDataset(dataset)
-        if proportion < 1:
-            n_all = len(dataset)
-            file_name = f'record/subidx_all_{n_all}_proportion_{proportion:.1f}.npy'
-            if os.path.exists(file_name):
-                sub_idx = np.load(file_name)
-            else:
-                n_samples = int(n_all * proportion)
-                sub_idx = np.random.choice(n_all, n_samples, replace=False)
-                np.save(file_name, sub_idx)
-            dataset = torch.utils.data.Subset(dataset, sub_idx)
         if with_idx:
             dataset = DatasetWithIndex(dataset)
         if rot:

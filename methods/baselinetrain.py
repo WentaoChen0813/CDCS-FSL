@@ -16,9 +16,7 @@ import torchvision
 
 
 class BaselineTrain(nn.Module):
-    def __init__(self, params, model_func, num_class, loss_type='softmax', ad_align=False, ad_loss_weight=0.001,
-                 pseudo_align=False, momentum=0.6, threshold=0.9, proto_align=False, ada_proto=False, rot_align=False,
-                 scale=2):
+    def __init__(self, params, model_func, num_class, loss_type='softmax'):
         super(BaselineTrain, self).__init__()
         self.params = params
         self.feature = model_func()
@@ -26,29 +24,16 @@ class BaselineTrain(nn.Module):
             self.classifier = nn.Linear(self.feature.final_feat_dim, num_class)
             self.classifier.bias.data.fill_(0)
         elif loss_type == 'dist':  # Baseline ++
-            self.classifier = backbone.distLinear(self.feature.final_feat_dim, num_class, scale)
+            self.classifier = backbone.distLinear(self.feature.final_feat_dim, num_class)
         elif loss_type == 'euclidean':
             self.classifier = backbone.protoLinear(self.feature.final_feat_dim, num_class)
         self.loss_type = loss_type  # 'softmax' #'dist'
         self.num_class = num_class
         self.loss_fn = nn.CrossEntropyLoss()
         self.DBval = False  # only set True for CUB dataset, see issue #31
-        self.ad_align = ad_align
-        self.ad_loss_weight = ad_loss_weight
-        if ad_align:
-            feat_dim = self.feature.final_feat_dim
-            self.discriminator = nn.Sequential(
-                nn.Linear(feat_dim, feat_dim // 2),
-                nn.LeakyReLU(0.2),
-                nn.Linear(feat_dim // 2, feat_dim // 4),
-                nn.LeakyReLU(0.2),
-                nn.Linear(feat_dim // 4, 2)
-            )
-        self.pseudo_align = pseudo_align
-        self.proto_align = proto_align
-        if pseudo_align or proto_align or params.pseudomix or params.fixmatch_teacher:
-            self.momentum = momentum
-            self.threshold = threshold
+        if params.pseudo_align or params.startup or params.bn_align or params.pseudomix or params.fixmatch_teacher:
+            self.momentum = params.momentum
+            self.threshold = params.threshold
             self.teacher_feature = model_func()
             if loss_type == 'softmax':
                 self.teacher_classifier = nn.Linear(self.feature.final_feat_dim, num_class)
@@ -58,21 +43,6 @@ class BaselineTrain(nn.Module):
             elif loss_type == 'euclidean':
                 self.teacher_classifier = backbone.protoLinear(self.feature.final_feat_dim, num_class)
             self.init_teacher()
-        self.ada_proto = ada_proto
-        if ada_proto:
-            self.weight_predictor = torch.nn.Sequential(
-                nn.Linear(num_class, 256),
-                nn.BatchNorm1d(256),
-                nn.ReLU(),
-                nn.Linear(256, 256),
-                nn.BatchNorm1d(256),
-                nn.ReLU(),
-                nn.Linear(256, 1)
-            )
-        self.rot_align = rot_align
-        if rot_align:
-            feat_dim = self.feature.final_feat_dim
-            self.rot_classifier = nn.Linear(feat_dim, 4)
         if params.simclr:
             self.projection_head = nn.Sequential(
                 nn.Linear(self.feature.final_feat_dim, self.feature.final_feat_dim),
@@ -83,17 +53,17 @@ class BaselineTrain(nn.Module):
             self.register_buffer('pred_distribution', torch.ones(self.num_class) / self.num_class)
 
     def init_teacher(self):
-        for param_t, param_s in zip(self.teacher_feature.parameters(), self.feature.parameters()):
+        for param_t, param_s in zip(self.teacher_feature.state_dict().values(), self.feature.state_dict().values()):
             param_t.data.copy_(param_s.data)
             param_t.requires_grad = False
-        for param_t, param_s in zip(self.teacher_classifier.parameters(), self.classifier.parameters()):
+        for param_t, param_s in zip(self.teacher_classifier.state_dict().values(), self.classifier.state_dict().values()):
             param_t.data.copy_(param_s.data)
             param_t.requires_grad = False
 
     def update_teacher(self):
-        for param_t, param_s in zip(self.teacher_feature.parameters(), self.feature.parameters()):
+        for param_t, param_s in zip(self.teacher_feature.state_dict().values(), self.feature.state_dict().values()):
             param_t.data = self.momentum * param_t.data + (1 - self.momentum) * param_s.data
-        for param_t, param_s in zip(self.teacher_classifier.parameters(), self.classifier.parameters()):
+        for param_t, param_s in zip(self.teacher_classifier.state_dict().values(), self.classifier.state_dict().values()):
             param_t.data = self.momentum * param_t.data + (1 - self.momentum) * param_s.data
 
     def forward(self, x):
@@ -130,47 +100,8 @@ class BaselineTrain(nn.Module):
         y = torch.ones(pred.shape[0], dtype=torch.long).cuda() * y
         return self.loss_fn(pred, y), x
 
-    def get_pseudo_samples(self, train_loader, params):
-        if not params.soft_label:
-            with torch.no_grad():
-                train_loader, unlabeled_loader = train_loader
-                selected_y = []
-                selected_idx = []
-                for x, _, idx in unlabeled_loader:
-                    prob, pred, _ = self.teacher_forward(x)
-                    selected_idx.append(idx[prob > self.threshold])
-                    selected_y.append(pred[prob > self.threshold])
-                selected_idx = torch.cat(selected_idx).detach().cpu().numpy()
-                selected_y = torch.cat(selected_y).detach().cpu().numpy()
-
-                class NewDataset:
-                    def __init__(self, dataset, label):
-                        self.dataset = dataset
-                        self.label = label
-
-                    def __getitem__(self, index):
-                        data, *_ = self.dataset[index]
-                        label = self.label[index]
-                        label = -label - 1
-                        return data, label
-
-                    def __len__(self):
-                        return len(self.dataset)
-
-                if len(selected_y) > 0:
-                    n_pseudo = len(selected_y)
-                    n_total = len(unlabeled_loader.dataset)
-                    print(f'Select {n_pseudo} ({100.0 * n_pseudo / n_total:.2f}%) pesudo samples')
-                    pseudo_dataset = torch.utils.data.Subset(unlabeled_loader.dataset, selected_idx)
-                    pseudo_dataset = NewDataset(pseudo_dataset, selected_y)
-                    labeled_dataset = train_loader.dataset
-                    new_dataset = torch.utils.data.ConcatDataset([labeled_dataset, pseudo_dataset])
-                    train_loader = torch.utils.data.DataLoader(new_dataset,
-                                                               batch_size=train_loader.batch_size,
-                                                               shuffle=True,
-                                                               num_workers=12,
-                                                               drop_last=True)
-        if params.soft_label:
+    def get_pseudo_samples(self, train_loader, params, soft_label=False):
+        if soft_label:
             with torch.no_grad():
                 train_loader, unlabeled_loader = train_loader
                 selected_idx = []
@@ -230,18 +161,59 @@ class BaselineTrain(nn.Module):
                                                                shuffle=True,
                                                                num_workers=12,
                                                                drop_last=True)
-        return train_loader, unlabeled_loader
+        if not soft_label:
+            with torch.no_grad():
+                train_loader, unlabeled_loader = train_loader
+                selected_y = []
+                selected_idx = []
+                for x, _, idx in unlabeled_loader:
+                    prob, pred, _ = self.teacher_forward(x)
+                    selected_idx.append(idx[prob > self.threshold])
+                    selected_y.append(pred[prob > self.threshold])
+                selected_idx = torch.cat(selected_idx).detach().cpu().numpy()
+                selected_y = torch.cat(selected_y).detach().cpu().numpy()
 
-    def get_pseudo_loader(self, unlabeled_loader):
+                class NewDataset:
+                    def __init__(self, dataset, label):
+                        self.dataset = dataset
+                        self.label = label
+
+                    def __getitem__(self, index):
+                        data, *_ = self.dataset[index]
+                        label = self.label[index]
+                        return data, label
+
+                    def __len__(self):
+                        return len(self.dataset)
+
+                if len(selected_y) > 0:
+                    n_pseudo = len(selected_y)
+                    n_total = len(unlabeled_loader.dataset)
+                    print(f'Select {n_pseudo} ({100.0 * n_pseudo / n_total:.2f}%) pesudo samples')
+                    pseudo_dataset = torch.utils.data.Subset(unlabeled_loader.dataset, selected_idx)
+                    pseudo_dataset = NewDataset(pseudo_dataset, selected_y)
+                    labeled_dataset = train_loader.dataset
+                    new_dataset = torch.utils.data.ConcatDataset([labeled_dataset, pseudo_dataset])
+                    train_loader = torch.utils.data.DataLoader(new_dataset,
+                                                               batch_size=train_loader.batch_size,
+                                                               shuffle=True,
+                                                               num_workers=12,
+                                                               drop_last=True)
+        return train_loader
+
+    def get_pseudo_loader(self, unlabeled_loader, soft_label=False):
         with torch.no_grad():
             selected_y = []
             selected_idx = []
             for x, _, idx in unlabeled_loader:
-                prob, pred, _ = self.teacher_forward(x)
-                selected_idx.append(idx[prob > self.threshold])
-                selected_y.append(pred[prob > self.threshold])
+                confidence, pred, prob = self.teacher_forward(x)
+                selected_idx.append(idx[confidence > self.threshold])
+                if soft_label:
+                    selected_y.append(prob[confidence > self.threshold])
+                else:
+                    selected_y.append(pred[confidence > self.threshold])
             selected_idx = torch.cat(selected_idx).detach().cpu().numpy()
-            selected_y = torch.cat(selected_y).detach().cpu().numpy()
+            selected_y = torch.cat(selected_y).detach().cpu()
 
             class NewDataset:
                 def __init__(self, dataset, label):
@@ -256,8 +228,8 @@ class BaselineTrain(nn.Module):
                 def __len__(self):
                     return len(self.dataset)
 
-            if len(selected_y) > 0:
-                n_pseudo = len(selected_y)
+            if len(selected_idx) > 0:
+                n_pseudo = len(selected_idx)
                 n_total = len(unlabeled_loader.dataset)
                 print(f'Select {n_pseudo} ({100.0 * n_pseudo / n_total:.2f}%) pesudo samples')
                 pseudo_dataset = torch.utils.data.Subset(unlabeled_loader.dataset, selected_idx)
@@ -380,52 +352,32 @@ class BaselineTrain(nn.Module):
     def train_loop(self, epoch, base_loader, optimizer, params=None):
         print_freq = 10
         avg_loss = 0
-        avg_ad_loss = 0
-        avg_discriminator_loss = 0
-        avg_proto_loss = 0
-        avg_rot_loss = 0
+        avg_pseudo_loss = 0
         avg_simclr_loss = 0
         avg_fixmatch_loss = 0
         avg_classcontrast_loss = 0
 
-        if self.ad_align or self.pseudo_align or self.proto_align or self.params.fixmatch or self.params.classcontrast or self.params.pseudomix:
-            if self.params.simclr:
-                train_loader, unlabeled_loader, simclr_loader = base_loader
-                simclr_iter = iter(simclr_loader)
-            elif (self.params.pseudo_align or self.params.pseudomix) and self.params.classcontrast:
-                train_loader, pseudo_loader, unlabeled_loader = base_loader
-            elif self.params.pseudomix:
-                train_loader, pseudo_loader = base_loader
-            else:
-                train_loader, unlabeled_loader = base_loader
-        else:
+        if not isinstance(base_loader, dict):
             train_loader = base_loader
+        else:
+            train_loader = base_loader['base']
+
+        if params.pseudo_align:
+            train_loader = self.get_pseudo_samples([base_loader['base'], base_loader['unlabeled']], params)
 
         if params.pseudomix and epoch == 0:
-            pseudo_loader = self.get_pseudo_loader(pseudo_loader)
-            pseudo_iter = iter(pseudo_loader)
-            base_loader[1] = pseudo_loader
-
-        if self.ad_align:
-            optimizer, discriminator_optim = optimizer
-        if self.proto_align:
-            paired_loader = self.get_pseudo_paired_samples(train_loader, unlabeled_loader, params)
-            paired_iter = iter(paired_loader)
+            unlabeled_loader = self.get_pseudo_loader(base_loader['unlabeled'])
+            base_loader['unlabeled'] = unlabeled_loader
+        if (params.startup or params.bn_align) and epoch == 0:
+            unlabeled_loader = self.get_pseudo_loader(base_loader['unlabeled'], soft_label=params.soft_label)
+            base_loader['unlabeled'] = unlabeled_loader
 
         for i, (x, y) in enumerate(train_loader):
-            if self.rot_align:
-                y, rot = y
-            if self.pseudo_align:
-                if not params.soft_label:
-                    pseudo_idx = y < 0
-                    real_idx = y >= 0
-                    y[pseudo_idx] = -(y[pseudo_idx] + 1)
-                    n_real = sum(real_idx).item()
-            if self.params.pseudomix:
+            if params.pseudomix:
                 try:
                     ux, uy, *_ = next(pseudo_iter)
                 except:
-                    pseudo_iter = iter(pseudo_loader)
+                    pseudo_iter = iter(base_loader['unlabeled'])
                     ux, uy, *_ = next(pseudo_iter)
                 if self.params.pseudomix_fn == 'mixup':
                     x, y = self.mixup(x.cuda(), ux.cuda(), y.cuda(), uy.cuda(), self.params.pseudomix_alpha, self.params.pseudomix_bi)
@@ -435,185 +387,99 @@ class BaselineTrain(nn.Module):
                 logit = self.classifier(fx)
                 loss = F.kl_div(F.log_softmax(logit, -1), y, reduction='batchmean')
                 avg_loss = avg_loss + loss.item()
-            elif self.params.fixmatch_1batch:
+
+            elif params.fixmatch:
                 try:
-                    ux, uy, *_ = next(unlabeled_iter)
+                    ux, uy, *_ = next(fixmatch_iter)
                 except:
-                    unlabeled_iter = iter(unlabeled_loader)
-                    ux, uy, *_ = next(unlabeled_iter)
-                ux = [x.cuda() for x in ux]
+                    fixmatch_iter = iter(base_loader['fixmatch'])
+                    ux, uy, *_ = next(fixmatch_iter)
+                x, y = x.cuda(), y.cuda()
+                ux = [uxi.cuda() for uxi in ux]
+                x_ux = torch.cat([x] + ux[1:], 0)
+                fx_fux = self.feature(x_ux)
+                fx, fux = fx_fux[:x.shape[0]], fx_fux[x.shape[0]:]
+                loss = self.loss_fn(self.classifier(fx), y)
+                avg_loss = avg_loss + loss.item()
+
                 with torch.no_grad():
                     if self.params.fixmatch_teacher:
                         pred = self.teacher_classifier(self.teacher_feature(ux[0]))
                     else:
                         pred = self.classifier(self.feature((ux[0])))
                     pred = F.softmax(pred, dim=-1)
+                    if self.params.distribution_align:
+                        self.pred_distribution = self.params.distribution_m * self.pred_distribution + \
+                                                 (1 - self.params.distribution_m) * pred.mean(0)
+                        pred = pred * (1. / self.num_class) / (self.pred_distribution.unsqueeze(0) + 1e-6)
+                        pred = pred / pred.sum(dim=-1, keepdim=True)
                     pseudo_label = pred.max(dim=-1)[1].detach()
                     confidence = pred.max(dim=-1)[0].detach()
                     mask = confidence.ge(self.params.threshold)
-                x, y = x.cuda(), y.cuda()
-                ux, pseudo_label = ux[1][mask], pseudo_label[mask]
-                x_ux = torch.cat([x, ux], 0)
-                fx_fux = self.feature(x_ux)
-                fx, fux = fx_fux[:x.shape[0]], fx_fux[x.shape[0]:]
-                loss = self.loss_fn(self.classifier(fx), y)
-                avg_loss = avg_loss + loss.item()
-                if pseudo_label.shape[0] > 0:
-                    fixmatch_loss = F.cross_entropy(self.classifier(fux), pseudo_label)
-                    fixmatch_loss *= (mask.float().sum()) / mask.shape[0]
-                else:
-                    fixmatch_loss = torch.tensor(0.).cuda()
+                    if self.params.fixmatch_anchor > 1:
+                        pseudo_label = pseudo_label.repeat(self.params.fixmatch_anchor)
+                        mask = mask.repeat(self.params.fixmatch_anchor)
+
+                fixmatch_loss = (F.cross_entropy(self.classifier(fux), pseudo_label, reduction='none') * mask).mean()
                 avg_fixmatch_loss += fixmatch_loss.item()
                 loss += self.params.fixmatch_lw * fixmatch_loss
+
+            elif params.bn_align:
+                try:
+                    ux, uy, *_ = next(unlabeled_iter)
+                except:
+                    unlabeled_iter = iter(base_loader['unlabeled'])
+                    ux, uy, *_ = next(unlabeled_iter)
+
+                x_ux = torch.cat([x, ux]).cuda()
+                y, uy = y.cuda(), uy.cuda()
+                logit = self.classifier(self.feature(x_ux))
+                logit_x, logit_ux = logit[:x.shape[0]], logit[x.shape[0]:]
+
+                loss = self.loss_fn(logit_x, y)
+                avg_loss = avg_loss + loss.item()
+
+                if params.soft_label:
+                    pseudo_loss = F.kl_div(F.log_softmax(logit_ux, -1), uy, reduction='batchmean')
+                else:
+                    pseudo_loss = self.loss_fn(logit_ux, uy)
+                avg_pseudo_loss += pseudo_loss.item()
+                loss += params.bn_align_lw * pseudo_loss
+
             else:
                 loss, fx = self.forward_loss(x, y)
                 avg_loss = avg_loss + loss.item()
 
-            # if self.rot_align:
-            # rot_loss = self.loss_fn(self.rot_classifier(fx), rot.cuda())
-
-            if self.ad_align:
+            if params.startup:
                 try:
-                    ux, y, *_ = next(unlabeled_iter)
+                    ux, uy, *_ = next(unlabeled_iter)
                 except:
-                    unlabeled_iter = iter(unlabeled_loader)
-                    ux, y, *_ = next(unlabeled_iter)
-                if isinstance(ux, list):
-                    ux = ux[0]
-                if self.pseudo_align:
-                    ux = ux[:n_real]
-                ad_loss, fux = self.discriminator_loss(ux, 1)
-                avg_ad_loss += ad_loss.item()
-                ad_loss *= self.ad_loss_weight
-                loss += ad_loss
+                    unlabeled_iter = iter(base_loader['unlabeled'])
+                    ux, uy, *_ = next(unlabeled_iter)
+                pseudo_loss, _ = self.forward_loss(ux, uy)
+                avg_pseudo_loss += pseudo_loss.item()
+                loss += pseudo_loss
 
-                if self.rot_align:
-                    _, rot = y
-                    rot_loss = self.loss_fn(self.rot_classifier(fux), rot.cuda())
-                    avg_rot_loss += rot_loss.item()
-                    loss += rot_loss
-
-            if self.proto_align:
-                sqx, _ = next(paired_iter)
-                n_way = params.train_n_way
-                n_shot = params.n_shot
-                n_query = sqx.shape[1] - n_shot
-                sqx = sqx.view(-1, *sqx.shape[2:]).cuda()
-                sqfx = self.feature(sqx)
-                sqfx = sqfx.view(n_way, n_shot + n_query, -1)
-                sfx, qfx = sqfx[:, :n_shot], sqfx[:, n_shot:]
-                if self.ada_proto:
-                    sx = sqx.view(n_way, n_shot + n_query, *sqx.shape[1:])[:, :n_shot]
-                    sx = sx.contiguous().view(n_way * n_shot, *sx.shape[2:])
-                    with torch.no_grad():
-                        sx = sx.cuda()
-                        sx = self.teacher_feature(sx)
-                        logit = self.teacher_classifier(sx)
-                        prob = torch.softmax(logit, dim=-1)
-                        max_logit, pred = logit.max(dim=-1)
-                    weight = self.weight_predictor(prob)
-                    weight += max_logit.unsqueeze(-1)
-                    logit = torch.scatter(logit, dim=-1, index=pred.unsqueeze(-1), src=weight)
-                    prob = torch.softmax(logit, -1)
-                    weight = torch.gather(prob, dim=-1, index=pred.unsqueeze(-1))
-                    weight = weight.view(n_way, n_shot)
-                    weight = weight / (weight.sum(dim=-1, keepdim=True) + 1e-6)
-                    sfx = sfx.view(n_way, n_shot, -1)
-                    proto = (sfx * weight.unsqueeze(-1)).sum(dim=1)
-                elif params.weight_proto:
-                    sx = sqx.view(n_way, n_shot + n_query, *sqx.shape[1:])[:, :n_shot]
-                    sx = sx.contiguous().view(n_way * n_shot, *sx.shape[2:])
-                    with torch.no_grad():
-                        weight, *_ = self.teacher_forward(sx)
-                        weight = weight.view(n_way, n_shot).cuda()
-                        weight = weight / (weight.sum(dim=-1, keepdim=True) + 1e-6)
-                    proto = (sfx * weight.unsqueeze(-1)).sum(dim=1)
-                else:
-                    proto = sfx.mean(dim=1)
-                qfx = qfx.contiguous().view(n_way * n_query, -1)
-                score = -euclidean_dist(qfx, proto)
-                qy = torch.arange(n_way).unsqueeze(-1).repeat(1, n_query).view(-1).cuda()
-                proto_loss = self.loss_fn(score, qy)
-                avg_proto_loss += proto_loss.item()
-                loss += proto_loss
-
-            if self.params.simclr:
+            if params.simclr:
                 try:
                     ux, _ = next(simclr_iter)
                 except:
-                    simclr_iter = iter(simclr_loader)
+                    simclr_iter = iter(base_loader['simclr'])
                     ux, _ = next(simclr_iter)
-                if self.params.simclr_prob:
-                    ux0, ux1 = ux[0].cuda(), ux[1].cuda()
-                    with torch.no_grad():
-                        prob0 = F.softmax(self.classifier(self.feature(ux0)), dim=-1)
-                        mask = prob0.max(dim=-1)[0] > self.params.classcontrast_th
-                    logit1 = self.classifier(self.feature(ux1))
-                    logprob1 = F.log_softmax(logit1, -1)
-                    simclr_loss = F.kl_div(logprob1, prob0, reduction='none').sum(-1)
-                    simclr_loss = (simclr_loss * mask).mean()
-                else:
-                    ux = torch.cat(ux, dim=0).cuda()
-                    fux = self.feature(ux)
-                    fux = self.projection_head(fux)
-                    logits, labels = self.info_nce_loss(fux)
-                    simclr_loss = self.loss_fn(logits, labels)
+                ux = torch.cat(ux, dim=0).cuda()
+                fux = self.feature(ux)
+                fux = self.projection_head(fux)
+                logits, labels = self.info_nce_loss(fux)
+                simclr_loss = self.loss_fn(logits, labels)
                 avg_simclr_loss += simclr_loss.item()
                 loss += simclr_loss
 
-            if self.params.fixmatch and not self.params.fixmatch_1batch:
+            if params.classcontrast:
                 try:
-                    ux, uy, *_ = next(unlabeled_iter)
+                    ux, uy, *_ = next(classcontrast_iter)
                 except:
-                    unlabeled_iter = iter(unlabeled_loader)
-                    ux, uy, *_ = next(unlabeled_iter)
-                ux = [x.cuda() for x in ux]
-                if self.params.fixmatch_anchor == 1:
-                    uxs = ux[1]
-                else:
-                    uxs = torch.cat(ux[1:])
-                if not self.params.fixmatch_gt:
-                    with torch.no_grad():
-                        if self.params.fixmatch_teacher:
-                            pred = self.teacher_classifier(self.teacher_feature(ux[0]))
-                        else:
-                            pred = self.classifier(self.feature((ux[0])))
-                        pred = F.softmax(pred, dim=-1)
-                        if self.params.distribution_align:
-                            with torch.no_grad():
-                                self.pred_distribution = self.params.distribution_m * self.pred_distribution + \
-                                                         (1 - self.params.distribution_m) * pred.mean(0)
-                                pred = pred * (1. / self.num_class) / (self.pred_distribution.unsqueeze(0) + 1e-6)
-                                pred = pred / pred.sum(dim=-1, keepdim=True)
-                        pseudo_label = pred.max(dim=-1)[1].detach()
-                        confidence = pred.max(dim=-1)[0].detach()
-                        mask = confidence.ge(self.params.threshold).float()
-                        if self.params.fixmatch_anchor > 1:
-                            pseudo_label = pseudo_label.repeat(self.params.fixmatch_anchor)
-                            mask = mask.repeat(self.params.fixmatch_anchor)
-                    if self.params.fixmatch_noaug:
-                        score = self.classifier(self.feature(ux[0]))
-                    else:
-                        score = self.classifier(self.feature(uxs))
-                    fixmatch_loss = (F.cross_entropy(score, pseudo_label, reduction='none') * mask).mean()
-                else:
-                    if self.params.fixmatch_anchor > 1:
-                        uy = uy.repreat(self.params.fixmatch_anchor)
-                    uy = uy.cuda()
-                    select = uy < self.num_class
-                    uy = uy[select]
-                    score = self.classifier(self.feature(uxs))
-                    score = score[select]
-                    fixmatch_loss = F.cross_entropy(score, uy)
-                avg_fixmatch_loss += fixmatch_loss.item()
-                loss += self.params.fixmatch_lw * fixmatch_loss
-
-            if self.params.classcontrast:
-                try:
-                    ux, uy, *_ = next(unlabeled_iter)
-                except:
-                    unlabeled_iter = iter(unlabeled_loader)
-                    ux, uy, *_ = next(unlabeled_iter)
+                    classcontrast_iter = iter(base_loader['classcontrast'])
+                    ux, uy, *_ = next(classcontrast_iter)
                 ux0, ux1 = ux[0].cuda(), ux[1].cuda()
                 with torch.no_grad():
                     prob0 = F.softmax(self.classifier(self.feature(ux0)), dim=-1)
@@ -637,29 +503,12 @@ class BaselineTrain(nn.Module):
             loss.backward()
             optimizer.step()
 
-            if self.ad_align:
-                if self.pseudo_align:
-                    fx = fx[real_idx]
-                real_loss, _ = self.discriminator_loss(fx.detach(), 1, is_feature=True)
-                fake_loss, _ = self.discriminator_loss(fux.detach(), 0, is_feature=True)
-                discriminator_loss = (real_loss + fake_loss) / 2
-                avg_discriminator_loss += discriminator_loss.item()
-
-                discriminator_optim.zero_grad()
-                discriminator_loss.backward()
-                discriminator_optim.step()
-
             if i % print_freq == 0:
                 # print(optimizer.state_dict()['param_groups'][0]['lr'])
                 print_line = 'Epoch {:d} | Batch {:d}/{:d} | Loss {:f}'.format(epoch, i, len(train_loader),
                                                                                avg_loss / float(i + 1))
-                if self.ad_align:
-                    print_line += ' | Ad_loss {:f} | Discriminator_loss {:f}'.format(avg_ad_loss / (i + 1),
-                                                                                     avg_discriminator_loss / (i + 1))
-                if self.proto_align:
-                    print_line += ' | Proto_loss {:f}'.format(avg_proto_loss / (i + 1))
-                if self.rot_align:
-                    print_line += ' | Rot_loss {:f}'.format(avg_rot_loss / (i + 1))
+                if self.params.startup or params.bn_align:
+                    print_line += ' | Pseudo_loss {:f}'.format(avg_pseudo_loss / (i + 1))
                 if self.params.simclr:
                     print_line += ' | Simclr_loss {:f}'.format(avg_simclr_loss / (i + 1))
                 if self.params.fixmatch:
@@ -668,19 +517,14 @@ class BaselineTrain(nn.Module):
                     print_line += ' | Classcontrast_loss {:f}'.format(avg_classcontrast_loss / (i + 1))
                 print(print_line)
 
-            if self.pseudo_align or self.proto_align or self.params.fixmatch_teacher:
+            if hasattr(self, 'teacher_feature'):
                 if self.momentum < 1:
                     if self.params.update_teacher == 'step' or (self.params.update_teacher == 'epoch' and i == len(train_loader)-1):
                         self.update_teacher()
 
         loss_dict = {'loss': avg_loss / (i + 1)}
-        if self.ad_align:
-            loss_dict['ad_loss'] = avg_ad_loss / (i + 1)
-            loss_dict['discriminator_loss'] = avg_discriminator_loss / (i + 1)
-        if self.proto_align:
-            loss_dict['proto_loss'] = avg_proto_loss / (i + 1)
-        if self.rot_align:
-            loss_dict['rot_loss'] = avg_rot_loss / (i + 1)
+        if self.params.startup or params.bn_align:
+            loss_dict['pseudo_loss'] = avg_pseudo_loss / (i + 1)
         if self.params.simclr:
             loss_dict['simclr_loss'] = avg_simclr_loss / (i + 1)
         if self.params.fixmatch:

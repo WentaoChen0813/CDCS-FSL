@@ -29,31 +29,22 @@ def test(val_loader, model, params):
     return acc
 
 def train(base_loader, val_loader, model, optimization, start_epoch, stop_epoch, params):
-    if not params.ad_align:
-        if optimization == 'Adam':
-            optimizer = torch.optim.Adam(model.parameters())
-        else:
-            raise ValueError('Unknown optimization, please define by yourself')
+    if optimization == 'adam':
+        optimizer = torch.optim.Adam(model.parameters(), lr=params.lr)
+        scheduler = None
+    elif optimization == 'sgd':
+        optimizer = torch.optim.SGD(model.parameters(), lr=params.lr, momentum=0.9, weight_decay=1e-4, nesterov=False)
+        scheduler = lr_scheduler.CosineAnnealingLR(optimizer, params.stop_epoch, eta_min=1e-6)
     else:
-        param_ids = [id(param) for param in model.discriminator]
-        base_params = [param for param in model.parameters() if id(param) not in param_ids]
-        base_optimizer = torch.optim.Adam(base_params)
-        discriminator_optimizer = torch.optim.Adam(model.discriminator.parameters())
-        optimizer = [base_optimizer, discriminator_optimizer]
+        raise ValueError('Unknown optimization, please define by yourself')
 
     max_acc = 0
-    ori_base_loader = base_loader
     for epoch in range(start_epoch,stop_epoch):
-        if params.pseudo_align:
-            model.train()
-            base_loader = model.get_pseudo_samples(ori_base_loader[:2], params)
-            if params.simclr or (params.pseudo_align and params.classcontrast):
-                base_loader = list(base_loader)
-                base_loader.append(ori_base_loader[-1])
-
         model.train()
         end = time.time()
-        loss = model.train_loop(epoch, base_loader,  optimizer, params) #model are called by reference, no need to return
+        loss = model.train_loop(epoch, base_loader, optimizer, params) #model are called by reference, no need to return
+        if scheduler is not None:
+            scheduler.step()
         print(f'Training time: {time.time() - end:.0f} s')
         if not isinstance(loss, dict):
             params.logger.scalar_summary('train/loss', loss, epoch)
@@ -81,17 +72,18 @@ if __name__ == '__main__':
     params = parse_args('train')
     # DEBUG
     # params.exp = 'debug'
-    # params.gpu = '0'
-    # params.cross_domain = 'painting'
+    # params.gpu = '7'
+    # params.cross_domain = 'quickdraw'
     # params.method = 'baseline'
     # params.loss_type = 'euclidean'
-    # params.ad_align = True
     # params.pseudo_align = True
-    # params.soft_label = True
     # params.threshold = 0.5
+    # params.startup_1batch = True
+    # params.bn_align = True
     # params.init_teacher = 'checkpoints/DomainNet/painting/ResNet18_baseline/0/80.tar'
+    # params.update_teacher = 'none'
+    # params.init_student = 'feature'
     # params.momentum = 0
-    # params.target_trans = 'randaug'
     # params.simclr = True
     # params.fixmatch = True
     # params.threshold = 0.5
@@ -127,13 +119,7 @@ if __name__ == '__main__':
         torch.manual_seed(params.seed)
         torch.backends.cudnn.deterministic = True
 
-    if params.dataset == 'cross':
-        base_file = configs.data_dir['miniImagenet'] + 'all.json'
-        val_file = configs.data_dir['CUB'] + 'val.json'
-    elif params.dataset == 'cross_char':
-        base_file = configs.data_dir['omniglot'] + 'noLatin.json'
-        val_file = configs.data_dir['emnist'] + 'val.json'
-    elif params.dataset == 'DomainNet':
+    if params.dataset == 'DomainNet':
         base_folder = '../dataset/DomainNet/real/base/'
 
         if params.supervised_align:
@@ -151,116 +137,56 @@ if __name__ == '__main__':
                           ]
             if params.reverse_sq:
                 val_folder = val_folder[::-1]
-        if params.cross_domain and (
-                params.ad_align or params.pseudo_align or params.pseudomix or params.proto_align or params.fixmatch or params.classcontrast):
             unlabeled_folder = [f'../dataset/DomainNet/{params.cross_domain}/base',
                                 f'../dataset/DomainNet/{params.cross_domain}/val',
                                 f'../dataset/DomainNet/{params.cross_domain}/novel']
-
     else:
-        base_file = configs.data_dir[params.dataset] + 'base.json'
-        val_file = configs.data_dir[params.dataset] + 'val.json'
+        raise ValueError('unknown dataset')
 
-    if 'Conv' in params.model:
-        if params.dataset in ['omniglot', 'cross_char']:
-            image_size = 28
-        else:
-            image_size = 84
-    else:
-        image_size = 224
-
-    if params.dataset in ['omniglot', 'cross_char']:
-        assert params.model == 'Conv4' and not params.train_aug, 'omniglot only support Conv4 without augmentation'
-        params.model = 'Conv4S'
-
-    optimization = 'Adam'
-
-    if params.stop_epoch == -1:
-        if params.method in ['baseline', 'baseline++']:
-            if params.dataset in ['omniglot', 'cross_char']:
-                params.stop_epoch = 5
-            elif params.dataset in ['CUB']:
-                params.stop_epoch = 200  # This is different as stated in the open-review paper. However, using 400 epoch in baseline actually lead to over-fitting
-            elif params.dataset in ['miniImagenet', 'cross']:
-                params.stop_epoch = 400
-            else:
-                params.stop_epoch = 400  # default
-        else:  # meta-learning methods
-            if params.n_shot == 1:
-                params.stop_epoch = 600
-            elif params.n_shot == 5:
-                params.stop_epoch = 400
-            else:
-                params.stop_epoch = 600  # default
+    image_size = 224
+    optimization = params.optimizer
 
     if params.method in ['baseline', 'baseline++']:
         base_datamgr = SimpleDataManager(image_size, batch_size=params.batch_size)
-        base_loader = base_datamgr.get_data_loader(data_folder=base_folder, aug=params.train_aug, rot=params.rot_align, drop_last=True)
+        base_loader = base_datamgr.get_data_loader(data_folder=base_folder, aug=params.train_aug, drop_last=True)
+
         few_shot_params = dict(n_way=params.test_n_way, n_support=params.n_shot)
         val_datamgr = SetDataManager(image_size, n_query=15, n_episode=params.n_episode, **few_shot_params)
         val_loader = val_datamgr.get_data_loader(data_folder=val_folder, aug=False, fix_seed=True)
-        if params.cross_domain and (
-                params.ad_align or params.pseudo_align or params.proto_align or params.fixmatch or params.classcontrast
-                or params.pseudomix):
+
+        if params.cross_domain:
+            unlabeled_datamgr = SimpleDataManager(image_size, batch_size=params.unlabeled_bs)
+            unlabeled_loader = unlabeled_datamgr.get_data_loader(data_folder=unlabeled_folder, aug=params.train_aug,
+                                                                 add_label=True,
+                                                                 with_idx=True)
+            base_loader = {'base': base_loader,
+                           'unlabeled': unlabeled_loader}
             if params.fixmatch:
                 unlabeled_datamgr = SimpleDataManager(image_size, batch_size=params.fixmatch_bs)
-                unlabeled_loader = unlabeled_datamgr.get_data_loader(data_folder=unlabeled_folder, fixmatch_trans=True,
-                                                                     fixmatch_anchor=params.fixmatch_anchor,
-                                                                     add_label=True,
-                                                                     proportion=params.unlabeled_proportion, )
-            elif params.classcontrast:
-                unlabeled_datamgr = SimpleDataManager(image_size, batch_size=params.batch_size)
                 unlabeled_loader = unlabeled_datamgr.get_data_loader(data_folder=unlabeled_folder,
                                                                      fixmatch_trans=True,
-                                                                     augtype=params.classcontrast_augtype,
-                                                                     # fixmatch_anchor=2, fixmatch_weak=False, simclr_trans=True,
-                                                                     add_label=True,
-                                                                     proportion=params.unlabeled_proportion, )
-            else:
+                                                                     fixmatch_anchor=params.fixmatch_anchor,
+                                                                     add_label=True)
+                base_loader['fixmatch'] = unlabeled_loader
+            if params.classcontrast:
                 unlabeled_datamgr = SimpleDataManager(image_size, batch_size=params.batch_size)
-                unlabeled_loader = unlabeled_datamgr.get_data_loader(data_folder=unlabeled_folder, aug=params.train_aug,
-                                                                     add_label=True,
-                                                                     proportion=params.unlabeled_proportion,
-                                                                     with_idx=True,
-                                                                     rot=params.rot_align)
-            base_loader = [base_loader, unlabeled_loader]
-
+                unlabeled_loader = unlabeled_datamgr.get_data_loader(dQata_folder=unlabeled_folder,
+                                                                     fixmatch_trans=True,
+                                                                     augtype=params.classcontrast_augtype,
+                                                                     add_label=True)
+                base_loader['classcontrast'] = unlabeled_loader
             if params.simclr:
                 simclr_datamgr = SimpleDataManager(image_size, batch_size=params.simclr_bs)
-                simclr_loader = simclr_datamgr.get_data_loader(data_folder=unlabeled_folder, simclr_trans=True,
-                                                               proportion=params.unlabeled_proportion)
-                base_loader.append(simclr_loader)
-            if (params.pseudo_align or params.pseudomix) and params.classcontrast:
-                unlabeled_datamgr = SimpleDataManager(image_size, batch_size=params.batch_size)
-                unlabeled_loader = unlabeled_datamgr.get_data_loader(data_folder=unlabeled_folder, aug=params.train_aug,
-                                                                     add_label=True,
-                                                                     proportion=params.unlabeled_proportion,
-                                                                     with_idx=True,
-                                                                     rot=params.rot_align)
-                base_loader.insert(1, unlabeled_loader)
-
-        if params.dataset == 'omniglot':
-            assert params.num_classes >= 4112, 'class number need to be larger than max label id in base class'
-        if params.dataset == 'cross_char':
-            assert params.num_classes >= 1597, 'class number need to be larger than max label id in base class'
+                simclr_loader = simclr_datamgr.get_data_loader(data_folder=unlabeled_folder, simclr_trans=True)
+                base_loader['simclr'] = simclr_loader
 
         if params.method == 'baseline':
-            model = BaselineTrain(params, model_dict[params.model], params.num_classes,
-                                  ad_align=params.ad_align, ad_loss_weight=params.ad_loss_weight,
-                                  pseudo_align=params.pseudo_align, momentum=params.momentum,
-                                  threshold=params.threshold, proto_align=params.proto_align,
-                                  ada_proto=params.ada_proto, rot_align=params.rot_align)
+            model = BaselineTrain(params, model_dict[params.model], params.num_classes)
         elif params.method == 'baseline++':
-            model = BaselineTrain(params, model_dict[params.model], params.num_classes, loss_type=params.loss_type,
-                                  ad_align=params.ad_align, ad_loss_weight=params.ad_loss_weight,
-                                  pseudo_align=params.pseudo_align, momentum=params.momentum,
-                                  threshold=params.threshold, proto_align=params.proto_align,
-                                  ada_proto=params.ada_proto, rot_align=params.rot_align,
-                                  scale=params.scale)
+            model = BaselineTrain(params, model_dict[params.model], params.num_classes, loss_type=params.loss_type)
 
     elif params.method in ['protonet', 'matchingnet', 'relationnet', 'relationnet_softmax', 'maml', 'maml_approx']:
-        n_query = max(1,
-                      int(15 * params.test_n_way / params.train_n_way))  # if test_n_way is smaller than train_n_way, reduce n_query to keep batch size small
+        n_query = max(1, int(15 * params.test_n_way / params.train_n_way))  # if test_n_way is smaller than train_n_way, reduce n_query to keep batch size small
 
         train_few_shot_params = dict(n_way=params.train_n_way, n_support=params.n_shot)
         base_datamgr = SetDataManager(image_size, n_query=n_query, **train_few_shot_params)
@@ -329,7 +255,7 @@ if __name__ == '__main__':
         tmp = torch.load(params.init_model)
         model.load_state_dict(tmp['state'], strict=False)
 
-    if (params.pseudo_align or params.pseudomix or params.fixmatch_teacher) and params.init_teacher:
+    if params.init_teacher:
         tmp = torch.load(params.init_teacher)
         feature = copy.deepcopy(model.feature)
         classifier = copy.deepcopy(model.classifier)
@@ -425,7 +351,7 @@ if __name__ == '__main__':
 
     # target_acc = []
     # save_iters = [-1] #+ [x for x in range(0, 40, 10)]
-    # for mode in ['train', 'eval']:
+    # for mode in ['eval', 'train']:
     #     for save_iter in save_iters:
     #         checkpoint_dir = params.checkpoint
     #         resume_file = get_resume_file(checkpoint_dir, save_iter)
@@ -442,6 +368,7 @@ if __name__ == '__main__':
     #                 fx = model.feature(x)
     #                 score = model.classifier(fx)
     #                 pred = score.max(dim=-1)[1]
+    #                 confidence = torch.nn.functional.softmax(score, -1).max(-1)[0]
     #                 acc_fc += float((pred == y).sum().item()) / pred.shape[0]
     #         acc_fc /= len(unlabeled_loader)
     #         target_acc.append(acc_fc)
@@ -459,8 +386,6 @@ if __name__ == '__main__':
             print(f'load state dict from epoch {tmp["epoch"]}')
             start_epoch = tmp['epoch'] + 1
             model.load_state_dict(tmp['state'], strict=False)
-            if params.proto_align:
-                model.init_teacher()
     elif params.warmup:  # We also support warmup from pretrained baseline feature, but we never used in our paper
         baseline_checkpoint_dir = '%s/checkpoints/%s/%s_%s' % (
         configs.save_dir, params.dataset, params.model, 'baseline')
