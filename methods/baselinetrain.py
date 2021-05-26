@@ -144,14 +144,7 @@ class BaselineTrain(nn.Module):
                     n_pseudo = len(selected_idx)
                     n_total = len(unlabeled_loader.dataset)
                     print(f'Select {n_pseudo} ({100.0 * n_pseudo / n_total:.2f}%) pesudo samples')
-                    if params.target_trans == 'none':
-                        pseudo_dataset = torch.utils.data.Subset(unlabeled_loader.dataset, selected_idx)
-                    elif params.target_trans == 'randaug':
-                        pseudo_dataset = copy.deepcopy(unlabeled_loader.dataset)
-                        trans = FixMatchTransform(has_weak=False)
-                        for i in range(len(pseudo_dataset.dataset.datasets)):
-                            pseudo_dataset.dataset.datasets[i].transform = trans
-                        pseudo_dataset = torch.utils.data.Subset(pseudo_dataset, selected_idx)
+                    pseudo_dataset = torch.utils.data.Subset(unlabeled_loader.dataset, selected_idx)
                     pseudo_dataset = AddSoftLabel(pseudo_dataset, soft_labels)
                     labeled_dataset = train_loader.dataset
                     labeled_dataset = ToOneHot(labeled_dataset, self.num_class)
@@ -161,7 +154,7 @@ class BaselineTrain(nn.Module):
                                                                shuffle=True,
                                                                num_workers=12,
                                                                drop_last=True)
-        if not soft_label:
+        else:
             with torch.no_grad():
                 train_loader, unlabeled_loader = train_loader
                 selected_y = []
@@ -363,7 +356,7 @@ class BaselineTrain(nn.Module):
             train_loader = base_loader['base']
 
         if params.pseudo_align:
-            train_loader = self.get_pseudo_samples([base_loader['base'], base_loader['unlabeled']], params)
+            train_loader = self.get_pseudo_samples([base_loader['base'], base_loader['unlabeled']], params, soft_label=params.soft_label)
 
         if params.pseudomix and epoch == 0:
             unlabeled_loader = self.get_pseudo_loader(base_loader['unlabeled'])
@@ -431,11 +424,22 @@ class BaselineTrain(nn.Module):
                     unlabeled_iter = iter(base_loader['unlabeled'])
                     ux, uy, *_ = next(unlabeled_iter)
 
-                x_ux = torch.cat([x, ux]).cuda()
-                y, uy = y.cuda(), uy.cuda()
-                logit = self.classifier(self.feature(x_ux))
-                logit_x, logit_ux = logit[:x.shape[0]], logit[x.shape[0]:]
+                if params.bn_align_mode == 'concat':
+                    x_ux = torch.cat([x, ux]).cuda()
+                    logit = self.classifier(self.feature(x_ux))
+                    logit_x, logit_ux = logit[:x.shape[0]], logit[x.shape[0]:]
+                elif params.bn_align_mode == 'dan':
+                    logit_x = self.classifier(self.feature(x.cuda()))
+                    self.feature.set_bn_use_cache(True)
+                    logit_ux = self.classifier(self.feature(ux.cuda()))
+                elif params.bn_align_mode == 'dsbn' or params.bn_align_mode == 'adabn':
+                    logit_x = self.classifier(self.feature(x.cuda()))
+                    self.feature.set_bn_choice('b')
+                    logit_ux = self.classifier(self.feature(ux.cuda()))
+                else:
+                    raise ValueError(params.bn_align_mode)
 
+                y, uy = y.cuda(), uy.cuda()
                 loss = self.loss_fn(logit_x, y)
                 avg_loss = avg_loss + loss.item()
 
@@ -549,13 +553,20 @@ class BaselineTrain(nn.Module):
                 support_label = torch.arange(n_way).unsqueeze(1).repeat(1, n_shot).view(-1).numpy()
                 query_label = torch.arange(n_way).unsqueeze(1).repeat(1, n_query).view(-1).numpy()
 
-                img = img.cuda()
-                img = img.view(-1, *img.shape[2:])
-                features = self.feature(img)
-                features = F.normalize(features, dim=1)
-                features = features.view(n_way, n_shot + n_query, -1)
-                support_feature = features[:, :n_shot].detach().cpu().numpy().reshape(n_way * n_shot, -1)
-                query_feature = features[:, n_shot:].detach().cpu().numpy().reshape(n_way * n_query, -1)
+                if params.bn_align and (params.bn_align_mode == 'dsbn' or params.bn_align_mode == 'adabn'):
+                    support = img[:, :n_shot].contiguous().view(-1, *img.shape[2:]).cuda()
+                    query = img[:, n_shot:].contiguous().view(-1, *img.shape[2:]).cuda()
+                    self.feature.set_bn_choice('b')
+                    support_feature = self.feature(support).detach().cpu().numpy().reshape(n_way * n_shot, -1)
+                    query_feature = self.feature(query).detach().cpu().numpy().reshape(n_way * n_query, -1)
+                else:
+                    img = img.cuda()
+                    img = img.view(-1, *img.shape[2:])
+                    features = self.feature(img)
+                    features = F.normalize(features, dim=1)
+                    features = features.view(n_way, n_shot + n_query, -1)
+                    support_feature = features[:, :n_shot].detach().cpu().numpy().reshape(n_way * n_shot, -1)
+                    query_feature = features[:, n_shot:].detach().cpu().numpy().reshape(n_way * n_query, -1)
 
                 clf = LogisticRegression(penalty='l2',
                                          random_state=0,

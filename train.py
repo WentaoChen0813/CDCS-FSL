@@ -73,13 +73,14 @@ if __name__ == '__main__':
     # DEBUG
     # params.exp = 'debug'
     # params.gpu = '7'
-    # params.cross_domain = 'quickdraw'
+    # params.cross_domain = 'clipart'
     # params.method = 'baseline'
     # params.loss_type = 'euclidean'
     # params.pseudo_align = True
-    # params.threshold = 0.5
-    # params.startup_1batch = True
+    # params.soft_label = True
+    # params.threshold = 0
     # params.bn_align = True
+    # params.bn_align_mode = 'adabn'
     # params.init_teacher = 'checkpoints/DomainNet/painting/ResNet18_baseline/0/80.tar'
     # params.update_teacher = 'none'
     # params.init_student = 'feature'
@@ -104,7 +105,7 @@ if __name__ == '__main__':
     # params.ada_proto = False
     # params.batch_size = 128
     # params.resume = True
-    # params.checkpoint = 'checkpoints/DomainNet/painting/ResNet18_baseline/0'
+    # params.checkpoint = 'checkpoints/DomainNet/clipart/ResNet18_baseline/bn_align_adabn'
     # params.checkpoint = 'checkpoints/DomainNet/painting/ResNet18_baseline/0'
     # params.save_iter = 0
     # params.test = True
@@ -180,6 +181,9 @@ if __name__ == '__main__':
                 simclr_loader = simclr_datamgr.get_data_loader(data_folder=unlabeled_folder, simclr_trans=True)
                 base_loader['simclr'] = simclr_loader
 
+        if params.bn_align and params.bn_align_mode != 'concat':
+            backbone.SimpleBlock.bn = params.bn_align_mode
+            backbone.ResNet.bn = params.bn_align_mode
         if params.method == 'baseline':
             model = BaselineTrain(params, model_dict[params.model], params.num_classes)
         elif params.method == 'baseline++':
@@ -260,7 +264,18 @@ if __name__ == '__main__':
         feature = copy.deepcopy(model.feature)
         classifier = copy.deepcopy(model.classifier)
         print(f'init teacher from {params.init_teacher}')
-        model.load_state_dict(tmp['state'], strict=False)
+        state = tmp['state']
+        if params.bn_align and (params.bn_align_mode == 'dsbn' or params.bn_align_mode == 'adabn'):
+            keys = model.state_dict().keys()
+            for key in keys:
+                if 'teacher' not in key:
+                    if 'bn1' in key and 'teacher':
+                        key2 = key.replace('bn1.', '')
+                        state[key] = state[key2]
+                    elif 'bn2' in key:
+                        key2 = key.replace('bn2.', '')
+                        state[key] = state[key2]
+        model.load_state_dict(state, strict=False)
         model.init_teacher()
         if params.init_student == 'none':
             model.feature = feature

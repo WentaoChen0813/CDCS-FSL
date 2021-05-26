@@ -144,9 +144,95 @@ class ConvBlock(nn.Module):
         out = self.trunk(x)
         return out
 
+
+class DANormalization(nn.BatchNorm2d):
+
+    def set_use_cache(self, mode=False):
+        self.use_cache = mode
+
+    def forward(self, input):
+        if not hasattr(self, 'use_cache'):
+            self.use_cache = False
+        self._check_input_dim(input)
+
+        # exponential_average_factor is set to self.momentum
+        # (when it is available) only so that if gets updated
+        # in ONNX graph when this node is exported to ONNX.
+        if self.momentum is None:
+            exponential_average_factor = 0.0
+        else:
+            exponential_average_factor = self.momentum
+
+        if self.training and self.track_running_stats and not self.use_cache:
+            if self.num_batches_tracked is not None:
+                self.num_batches_tracked = self.num_batches_tracked + 1
+                if self.momentum is None:  # use cumulative moving average
+                    exponential_average_factor = 1.0 / float(self.num_batches_tracked)
+                else:  # use exponential moving average
+                    exponential_average_factor = self.momentum
+
+        if self.use_cache:
+            # only use cache once until set it manually
+            self.use_cache = False
+            return F.batch_norm(
+            input, self.cache_mean, self.cache_var, self.weight, self.bias,
+            False, exponential_average_factor, self.eps)
+        else:
+            with torch.no_grad():
+                self.cache_mean = torch.mean(input, dim=(0, 2, 3))
+                self.cache_var = torch.var(input, dim=(0, 2, 3), unbiased=False)
+            return F.batch_norm(
+                input, self.running_mean, self.running_var, self.weight, self.bias,
+                self.training or not self.track_running_stats,
+                exponential_average_factor, self.eps)
+
+
+class DSBatchNorm(nn.Module):
+    def __init__(self, channels):
+        super().__init__()
+        self.bn1 = nn.BatchNorm2d(channels)
+        self.bn2 = nn.BatchNorm2d(channels)
+        self.choice = 'a'
+
+    def forward(self, input):
+        if self.choice == 'a':
+            return self.bn1(input)
+        elif self.choice == 'b':
+            # use bn1 as default, use bn2 only once after manually setting.
+            self.choice = 'a'
+            return self.bn2(input)
+
+    def set_choice(self, choice):
+        assert choice in ['a', 'b']
+        self.choice = choice
+
+
+class AdaBatchNorm(nn.Module):
+    def __init__(self, channels):
+        super().__init__()
+        self.bn1 = nn.BatchNorm2d(channels)
+        self.bn2 = nn.BatchNorm2d(channels)
+        self.bn2.weight = self.bn1.weight
+        self.bn2.bias = self.bn1.bias
+        self.choice = 'a'
+
+    def forward(self, input):
+        if self.choice == 'a':
+            return self.bn1(input)
+        elif self.choice == 'b':
+            # use bn1 as default, use bn2 only once after manually setting.
+            self.choice = 'a'
+            return self.bn2(input)
+
+    def set_choice(self, choice):
+        assert choice in ['a', 'b']
+        self.choice = choice
+
+
 # Simple ResNet Block
 class SimpleBlock(nn.Module):
     maml = False #Default
+    bn = 'normal'
     def __init__(self, indim, outdim, half_res):
         super(SimpleBlock, self).__init__()
         self.indim = indim
@@ -158,9 +244,21 @@ class SimpleBlock(nn.Module):
             self.BN2 = BatchNorm2d_fw(outdim)
         else:
             self.C1 = nn.Conv2d(indim, outdim, kernel_size=3, stride=2 if half_res else 1, padding=1, bias=False)
-            self.BN1 = nn.BatchNorm2d(outdim)
             self.C2 = nn.Conv2d(outdim, outdim,kernel_size=3, padding=1,bias=False)
-            self.BN2 = nn.BatchNorm2d(outdim)
+            if self.bn == 'normal':
+                self.BN1 = nn.BatchNorm2d(outdim)
+                self.BN2 = nn.BatchNorm2d(outdim)
+            elif self.bn == 'dan':
+                self.BN1 = DANormalization(outdim)
+                self.BN2 = DANormalization(outdim)
+            elif self.bn == 'dsbn':
+                self.BN1 = DSBatchNorm(outdim)
+                self.BN2 = DSBatchNorm(outdim)
+            elif self.bn == 'adabn':
+                self.BN1 = AdaBatchNorm(outdim)
+                self.BN2 = AdaBatchNorm(outdim)
+            else:
+                raise ValueError(self.bn)
         self.relu1 = nn.ReLU(inplace=True)
         self.relu2 = nn.ReLU(inplace=True)
 
@@ -175,7 +273,16 @@ class SimpleBlock(nn.Module):
                 self.BNshortcut = BatchNorm2d_fw(outdim)
             else:
                 self.shortcut = nn.Conv2d(indim, outdim, 1, 2 if half_res else 1, bias=False)
-                self.BNshortcut = nn.BatchNorm2d(outdim)
+                if self.bn == 'normal':
+                    self.BNshortcut = nn.BatchNorm2d(outdim)
+                elif self.bn == 'dan':
+                    self.BNshortcut = DANormalization(outdim)
+                elif self.bn == 'dsbn':
+                    self.BNshortcut = DSBatchNorm(outdim)
+                elif self.bn == 'adabn':
+                    self.BNshortcut = AdaBatchNorm(outdim)
+                else:
+                    raise ValueError(self.bn)
 
             self.parametrized_layers.append(self.shortcut)
             self.parametrized_layers.append(self.BNshortcut)
@@ -338,6 +445,7 @@ class ConvNetSNopool(nn.Module): #Relation net use a 4 layer conv with pooling i
 
 class ResNet(nn.Module):
     maml = False #Default
+    bn = 'normal'
     def __init__(self,block,list_of_num_layers, list_of_out_dims, flatten = True):
         # list_of_num_layers specifies number of layers in each stage
         # list_of_out_dims specifies number of output channel for each stage
@@ -350,7 +458,16 @@ class ResNet(nn.Module):
         else:
             conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3,
                                                bias=False)
-            bn1 = nn.BatchNorm2d(64)
+            if self.bn == 'normal':
+                bn1 = nn.BatchNorm2d(64)
+            elif self.bn == 'dan':
+                bn1 = DANormalization(64)
+            elif self.bn == 'dsbn':
+                bn1 = DSBatchNorm(64)
+            elif self.bn == 'adabn':
+                bn1 = AdaBatchNorm(64)
+            else:
+                raise ValueError(self.bn)
 
         relu = nn.ReLU()
         pool1 = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
@@ -383,6 +500,16 @@ class ResNet(nn.Module):
     def forward(self,x):
         out = self.trunk(x)
         return out
+
+    def set_bn_use_cache(self, mode):
+        for module in self.modules():
+            if isinstance(module, DANormalization):
+                module.set_use_cache(mode)
+
+    def set_bn_choice(self, choice):
+        for module in self.modules():
+            if isinstance(module, DSBatchNorm) or isinstance(module, AdaBatchNorm):
+                module.set_choice(choice)
 
 def Conv4():
     return ConvNet(4)
