@@ -34,14 +34,8 @@ class BaselineTrain(nn.Module):
         if params.pseudo_align or params.startup or params.bn_align or params.pseudomix or params.fixmatch_teacher:
             self.momentum = params.momentum
             self.threshold = params.threshold
-            self.teacher_feature = model_func()
-            if loss_type == 'softmax':
-                self.teacher_classifier = nn.Linear(self.feature.final_feat_dim, num_class)
-                self.teacher_classifier.bias.data.fill_(0)
-            elif loss_type == 'dist':  # Baseline ++
-                self.teacher_classifier = backbone.distLinear(self.feature.final_feat_dim, num_class)
-            elif loss_type == 'euclidean':
-                self.teacher_classifier = backbone.protoLinear(self.feature.final_feat_dim, num_class)
+            self.teacher_feature = copy.deepcopy(self.feature)
+            self.teacher_classifier = copy.deepcopy(self.classifier)
             self.init_teacher()
         if params.simclr:
             self.projection_head = nn.Sequential(
@@ -424,17 +418,15 @@ class BaselineTrain(nn.Module):
                     unlabeled_iter = iter(base_loader['unlabeled'])
                     ux, uy, *_ = next(unlabeled_iter)
 
-                if params.bn_align_mode == 'concat':
+                if params.bn_align_mode in  ['concat', 'dsbn', 'adabn', 'asbn']:
                     x_ux = torch.cat([x, ux]).cuda()
+                    if params.bn_align_mode in ['dsbn', 'adabn']:
+                        self.feature.set_bn_choice('split')
                     logit = self.classifier(self.feature(x_ux))
                     logit_x, logit_ux = logit[:x.shape[0]], logit[x.shape[0]:]
                 elif params.bn_align_mode == 'dan':
                     logit_x = self.classifier(self.feature(x.cuda()))
                     self.feature.set_bn_use_cache(True)
-                    logit_ux = self.classifier(self.feature(ux.cuda()))
-                elif params.bn_align_mode == 'dsbn' or params.bn_align_mode == 'adabn':
-                    logit_x = self.classifier(self.feature(x.cuda()))
-                    self.feature.set_bn_choice('b')
                     logit_ux = self.classifier(self.feature(ux.cuda()))
                 else:
                     raise ValueError(params.bn_align_mode)

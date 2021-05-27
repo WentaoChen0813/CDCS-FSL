@@ -80,7 +80,7 @@ if __name__ == '__main__':
     # params.soft_label = True
     # params.threshold = 0
     # params.bn_align = True
-    # params.bn_align_mode = 'adabn'
+    # params.bn_align_mode = 'asbn'
     # params.init_teacher = 'checkpoints/DomainNet/painting/ResNet18_baseline/0/80.tar'
     # params.update_teacher = 'none'
     # params.init_student = 'feature'
@@ -105,7 +105,7 @@ if __name__ == '__main__':
     # params.ada_proto = False
     # params.batch_size = 128
     # params.resume = True
-    # params.checkpoint = 'checkpoints/DomainNet/clipart/ResNet18_baseline/bn_align_adabn'
+    # params.checkpoint = 'checkpoints/DomainNet/clipart/ResNet18_baseline/bn_align_asbn_clip_bs_ubs64'
     # params.checkpoint = 'checkpoints/DomainNet/painting/ResNet18_baseline/0'
     # params.save_iter = 0
     # params.test = True
@@ -188,7 +188,7 @@ if __name__ == '__main__':
             model = BaselineTrain(params, model_dict[params.model], params.num_classes)
         elif params.method == 'baseline++':
             model = BaselineTrain(params, model_dict[params.model], params.num_classes, loss_type=params.loss_type)
-
+        print(model)
     elif params.method in ['protonet', 'matchingnet', 'relationnet', 'relationnet_softmax', 'maml', 'maml_approx']:
         n_query = max(1, int(15 * params.test_n_way / params.train_n_way))  # if test_n_way is smaller than train_n_way, reduce n_query to keep batch size small
 

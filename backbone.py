@@ -201,9 +201,15 @@ class DSBatchNorm(nn.Module):
             # use bn1 as default, use bn2 only once after manually setting.
             self.choice = 'a'
             return self.bn2(input)
+        elif self.choice == 'split':
+            self.choice = 'a'
+            x1, x2 = torch.chunk(input, 2, dim=0)
+            x1 = self.bn1(x1)
+            x2 = self.bn2(x2)
+            return torch.cat([x1, x2], dim=0)
 
     def set_choice(self, choice):
-        assert choice in ['a', 'b']
+        assert choice in ['a', 'b', 'split']
         self.choice = choice
 
 
@@ -223,10 +229,63 @@ class AdaBatchNorm(nn.Module):
             # use bn1 as default, use bn2 only once after manually setting.
             self.choice = 'a'
             return self.bn2(input)
+        elif self.choice == 'split':
+            self.choice = 'a'
+            x1, x2 = torch.chunk(input, 2, dim=0)
+            x1 = self.bn1(x1)
+            x2 = self.bn2(x2)
+            return torch.cat([x1, x2], dim=0)
 
     def set_choice(self, choice):
-        assert choice in ['a', 'b']
+        assert choice in ['a', 'b', 'split']
         self.choice = choice
+
+
+class AdaptiveSharedBatchNorm(nn.BatchNorm2d):
+    def __init__(self, num_features, eps=1e-5, momentum=0.1, affine=True,
+                 track_running_stats=True):
+        super().__init__(num_features, eps, momentum, affine, track_running_stats)
+        self.alpha = nn.Parameter(torch.tensor(0.5), requires_grad=True)
+
+    def forward(self, input):
+        self._check_input_dim(input)
+
+        # exponential_average_factor is set to self.momentum
+        # (when it is available) only so that if gets updated
+        # in ONNX graph when this node is exported to ONNX.
+        if self.momentum is None:
+            exponential_average_factor = 0.0
+        else:
+            exponential_average_factor = self.momentum
+
+        if self.training and self.track_running_stats:
+            if self.num_batches_tracked is not None:
+                self.num_batches_tracked = self.num_batches_tracked + 1
+                if self.momentum is None:  # use cumulative moving average
+                    exponential_average_factor = 1.0 / float(self.num_batches_tracked)
+                else:  # use exponential moving average
+                    exponential_average_factor = self.momentum
+
+        if self.training:
+            alpha = torch.clamp(self.alpha, 0., 1.)
+            x1, x2 = torch.chunk(input, 2, dim=0)
+            mean1 = torch.mean(x1, dim=(0, 2, 3))
+            mean2 = torch.mean(x2, dim=(0, 2, 3))
+            mean = alpha * mean1 + (1-alpha) * mean2
+            var1 = ((x1 - mean.view(1, -1, 1, 1))**2).mean(dim=(0, 2, 3))
+            var2 = ((x2 - mean.view(1, -1, 1, 1))**2).mean(dim=(0, 2, 3))
+            var = alpha * var1 + (1-alpha) * var2
+            input = (input - mean.view(1, -1, 1, 1)) / torch.sqrt(var.view(1, -1, 1, 1) + self.eps)
+            input = self.weight.view(1, -1, 1, 1) * input + self.bias.view(1, -1, 1, 1)
+            with torch.no_grad():
+                self.running_mean = (1 - exponential_average_factor) * self.running_mean + exponential_average_factor * mean
+                self.running_var = (1 - exponential_average_factor) * self.running_var + exponential_average_factor * var
+            return input
+        else:
+            return F.batch_norm(
+                input, self.running_mean, self.running_var, self.weight, self.bias,
+                self.training or not self.track_running_stats,
+                exponential_average_factor, self.eps)
 
 
 # Simple ResNet Block
@@ -257,6 +316,9 @@ class SimpleBlock(nn.Module):
             elif self.bn == 'adabn':
                 self.BN1 = AdaBatchNorm(outdim)
                 self.BN2 = AdaBatchNorm(outdim)
+            elif self.bn == 'asbn':
+                self.BN1 = AdaptiveSharedBatchNorm(outdim)
+                self.BN2 = AdaptiveSharedBatchNorm(outdim)
             else:
                 raise ValueError(self.bn)
         self.relu1 = nn.ReLU(inplace=True)
@@ -281,6 +343,8 @@ class SimpleBlock(nn.Module):
                     self.BNshortcut = DSBatchNorm(outdim)
                 elif self.bn == 'adabn':
                     self.BNshortcut = AdaBatchNorm(outdim)
+                elif self.bn == 'asbn':
+                    self.BNshortcut = AdaptiveSharedBatchNorm(outdim)
                 else:
                     raise ValueError(self.bn)
 
@@ -450,6 +514,9 @@ class ResNet(nn.Module):
         # list_of_num_layers specifies number of layers in each stage
         # list_of_out_dims specifies number of output channel for each stage
         super(ResNet,self).__init__()
+        # bn_cache = SimpleBlock.bn
+        # SimpleBlock.bn = 'normal'
+        # self.bn = 'normal'
         assert len(list_of_num_layers)==4, 'Can have only four stages'
         if self.maml:
             conv1 = Conv2d_fw(3, 64, kernel_size=7, stride=2, padding=3,
@@ -466,6 +533,8 @@ class ResNet(nn.Module):
                 bn1 = DSBatchNorm(64)
             elif self.bn == 'adabn':
                 bn1 = AdaBatchNorm(64)
+            elif self.bn == 'asbn':
+                bn1 = AdaptiveSharedBatchNorm(64)
             else:
                 raise ValueError(self.bn)
 
@@ -480,7 +549,8 @@ class ResNet(nn.Module):
 
         indim = 64
         for i in range(4):
-
+            # if i == 2:
+            #     SimpleBlock.bn = bn_cache
             for j in range(list_of_num_layers[i]):
                 half_res = (i>=1) and (j==0)
                 B = block(indim, list_of_out_dims[i], half_res)
