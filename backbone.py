@@ -318,6 +318,61 @@ class DSConv(nn.Module):
         self.choice = choice
 
 
+class DSWBNorm(nn.BatchNorm2d):
+    def __init__(self, num_features, eps=1e-5, momentum=0.1, affine=True,
+                 track_running_stats=True):
+        super().__init__(num_features, eps, momentum, affine, track_running_stats)
+        self.weight2 = nn.Parameter(torch.ones_like(self.weight), requires_grad=True)
+        self.bias2 = nn.Parameter(torch.zeros_like(self.bias), requires_grad=True)
+        self.choice = 'a'
+
+    def forward(self, input):
+        self._check_input_dim(input)
+
+        # exponential_average_factor is set to self.momentum
+        # (when it is available) only so that if gets updated
+        # in ONNX graph when this node is exported to ONNX.
+        if self.momentum is None:
+            exponential_average_factor = 0.0
+        else:
+            exponential_average_factor = self.momentum
+
+        if self.training and self.track_running_stats:
+            if self.num_batches_tracked is not None:
+                self.num_batches_tracked = self.num_batches_tracked + 1
+                if self.momentum is None:  # use cumulative moving average
+                    exponential_average_factor = 1.0 / float(self.num_batches_tracked)
+                else:  # use exponential moving average
+                    exponential_average_factor = self.momentum
+
+        if self.choice == 'a':
+            return F.batch_norm(
+                input, self.running_mean, self.running_var, self.weight, self.bias,
+                self.training or not self.track_running_stats,
+                exponential_average_factor, self.eps)
+        elif self.choice == 'b':
+            self.choice = 'a'
+            return F.batch_norm(
+                input, self.running_mean, self.running_var, self.weight2, self.bias2,
+                self.training or not self.track_running_stats,
+                exponential_average_factor, self.eps)
+        elif self.choice == 'split':
+            self.choice = 'a'
+            x1, x2 = torch.chunk(input, 2, dim=0)
+            x1 = F.batch_norm(
+                x1, self.running_mean, self.running_var, self.weight, self.bias,
+                self.training or not self.track_running_stats,
+                exponential_average_factor, self.eps)
+            x2 = F.batch_norm(
+                x2, self.running_mean, self.running_var, self.weight2, self.bias2,
+                self.training or not self.track_running_stats,
+                exponential_average_factor, self.eps)
+            return torch.cat([x1, x2])
+
+    def set_choice(self, choice):
+        assert choice in ['a', 'b', 'split']
+        self.choice = choice
+
 # Simple ResNet Block
 class SimpleBlock(nn.Module):
     maml = False #Default
@@ -349,6 +404,9 @@ class SimpleBlock(nn.Module):
             elif self.bn == 'asbn':
                 self.BN1 = AdaptiveSharedBatchNorm(outdim)
                 self.BN2 = AdaptiveSharedBatchNorm(outdim)
+            elif self.bn == 'dswb':
+                self.BN1 = DSWBNorm(outdim)
+                self.BN2 = DSWBNorm(outdim)
             else:
                 raise ValueError(self.bn)
         self.relu1 = nn.ReLU(inplace=True)
@@ -375,6 +433,8 @@ class SimpleBlock(nn.Module):
                     self.BNshortcut = AdaBatchNorm(outdim)
                 elif self.bn == 'asbn':
                     self.BNshortcut = AdaptiveSharedBatchNorm(outdim)
+                elif self.bn == 'dswb':
+                    self.BNshortcut = DSWBNorm(outdim)
                 else:
                     raise ValueError(self.bn)
 
@@ -568,6 +628,8 @@ class ResNet(nn.Module):
             elif self.bn == 'dsconv':
                 conv1 = DSConv(3, 64, kernel_size=7, stride=2, padding=3, bias=False)
                 bn1 = nn.BatchNorm2d(64)
+            elif self.bn == 'dswb':
+                bn1 = DSWBNorm(64)
             else:
                 raise ValueError(self.bn)
 
@@ -611,7 +673,7 @@ class ResNet(nn.Module):
 
     def set_bn_choice(self, choice):
         for module in self.modules():
-            if isinstance(module, DSBatchNorm) or isinstance(module, AdaBatchNorm):
+            if isinstance(module, DSBatchNorm) or isinstance(module, AdaBatchNorm) or isinstance(module, DSWBNorm):
                 module.set_choice(choice)
 
     def set_conv_choice(self, choice):

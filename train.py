@@ -81,7 +81,7 @@ if __name__ == '__main__':
     # params.threshold = 0
     # params.startup = True
     # params.bn_align = True
-    # params.bn_align_mode = 'dsbn'
+    # params.bn_align_mode = 'dsconv'
     # params.init_teacher = 'checkpoints/DomainNet/painting/ResNet18_baseline/0/80.tar'
     # params.update_teacher = 'none'
     # params.init_student = 'feature'
@@ -106,7 +106,7 @@ if __name__ == '__main__':
     # params.ada_proto = False
     # params.batch_size = 128
     # params.resume = True
-    # params.checkpoint = 'checkpoints/DomainNet/clipart/ResNet18_baseline/bn_align_dsbn'
+    # params.checkpoint = 'checkpoints/DomainNet/clipart/ResNet18_baseline/bn_align_dsconv'
     # params.checkpoint = 'checkpoints/DomainNet/painting/ResNet18_baseline/0'
     # params.save_iter = 20
     # params.test = True

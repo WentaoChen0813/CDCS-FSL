@@ -418,9 +418,9 @@ class BaselineTrain(nn.Module):
                     unlabeled_iter = iter(base_loader['unlabeled'])
                     ux, uy, *_ = next(unlabeled_iter)
 
-                if params.bn_align_mode in  ['concat', 'dsbn', 'adabn', 'asbn', 'dsconv']:
+                if params.bn_align_mode in  ['concat', 'dsbn', 'adabn', 'asbn', 'dsconv', 'dswb']:
                     x_ux = torch.cat([x, ux]).cuda()
-                    if params.bn_align_mode in ['dsbn', 'adabn']:
+                    if params.bn_align_mode in ['dsbn', 'adabn', 'dswb']:
                         self.feature.set_bn_choice('split')
                     if params.bn_align_mode == 'dsconv':
                         self.feature.set_conv_choice('split')
@@ -547,7 +547,7 @@ class BaselineTrain(nn.Module):
                 support_label = torch.arange(n_way).unsqueeze(1).repeat(1, n_shot).view(-1).numpy()
                 query_label = torch.arange(n_way).unsqueeze(1).repeat(1, n_query).view(-1).numpy()
 
-                if params.bn_align_mode in ['dsbn', 'adabn']:
+                if params.bn_align_mode in ['dsbn', 'adabn', 'dswb']:
                     support = img[:, :n_shot].contiguous().view(-1, *img.shape[2:]).cuda()
                     query = img[:, n_shot:].contiguous().view(-1, *img.shape[2:]).cuda()
                     self.feature.set_bn_choice('b')
