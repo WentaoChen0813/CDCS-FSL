@@ -79,8 +79,9 @@ if __name__ == '__main__':
     # params.pseudo_align = True
     # params.soft_label = True
     # params.threshold = 0
+    # params.startup = True
     # params.bn_align = True
-    # params.bn_align_mode = 'asbn'
+    # params.bn_align_mode = 'dsbn'
     # params.init_teacher = 'checkpoints/DomainNet/painting/ResNet18_baseline/0/80.tar'
     # params.update_teacher = 'none'
     # params.init_student = 'feature'
@@ -105,9 +106,9 @@ if __name__ == '__main__':
     # params.ada_proto = False
     # params.batch_size = 128
     # params.resume = True
-    # params.checkpoint = 'checkpoints/DomainNet/clipart/ResNet18_baseline/bn_align_asbn_clip_bs_ubs64'
+    # params.checkpoint = 'checkpoints/DomainNet/clipart/ResNet18_baseline/bn_align_dsbn'
     # params.checkpoint = 'checkpoints/DomainNet/painting/ResNet18_baseline/0'
-    # params.save_iter = 0
+    # params.save_iter = 20
     # params.test = True
     # params.cross_domain = 'real'
     # params.split = 'base'
@@ -265,15 +266,22 @@ if __name__ == '__main__':
         classifier = copy.deepcopy(model.classifier)
         print(f'init teacher from {params.init_teacher}')
         state = tmp['state']
-        if params.bn_align and (params.bn_align_mode == 'dsbn' or params.bn_align_mode == 'adabn'):
+        if params.bn_align_mode in ['dsbn', 'adabn']:
             keys = model.state_dict().keys()
             for key in keys:
                 if 'teacher' not in key:
-                    if 'bn1' in key and 'teacher':
+                    if 'bn1' in key:
                         key2 = key.replace('bn1.', '')
                         state[key] = state[key2]
                     elif 'bn2' in key:
                         key2 = key.replace('bn2.', '')
+                        state[key] = state[key2]
+        elif params.bn_align_mode == 'dsconv':
+            keys = model.state_dict().keys()
+            for key in keys:
+                if 'teacher' not in key:
+                    if 'conv0' in key:
+                        key2 = key.replace('conv0.', '')
                         state[key] = state[key2]
         model.load_state_dict(state, strict=False)
         model.init_teacher()
@@ -389,6 +397,28 @@ if __name__ == '__main__':
     #         target_acc.append(acc_fc)
     #         print(f'target_acc: {target_acc}')
     # exit()
+
+    # mean, var = 0., 0.
+    # resume_file = get_resume_file(params.checkpoint, -1)
+    # tmp = torch.load(resume_file)
+    # model.load_state_dict(tmp['state'], strict=False)
+    # model.eval()
+    #
+    # with torch.no_grad():
+    #     for i, (x, y, *_) in enumerate(base_loader['unlabeled']):
+    #         model.feature.set_bn_choice('b')
+    #         fx = model.feature(x.cuda())
+    #         mean_i, var_i = model.feature.get_mean_var()
+    #         if i == 0:
+    #             mean, var = mean_i, var_i
+    #         else:
+    #             for j, (avg, cur) in enumerate(zip(mean, mean_i)):
+    #                 mean[j] = (avg * i + cur) / (i+1)
+    #             for j, (avg, cur) in enumerate(zip(var, var_i)):
+    #                 var[j] = (avg * i + cur) / (i+1)
+    # torch.save([mean, var], 'startup_u_mean_var.pt')
+    # exit()
+
 
     if params.resume:
         if params.checkpoint:

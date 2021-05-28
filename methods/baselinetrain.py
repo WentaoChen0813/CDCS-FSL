@@ -418,10 +418,12 @@ class BaselineTrain(nn.Module):
                     unlabeled_iter = iter(base_loader['unlabeled'])
                     ux, uy, *_ = next(unlabeled_iter)
 
-                if params.bn_align_mode in  ['concat', 'dsbn', 'adabn', 'asbn']:
+                if params.bn_align_mode in  ['concat', 'dsbn', 'adabn', 'asbn', 'dsconv']:
                     x_ux = torch.cat([x, ux]).cuda()
                     if params.bn_align_mode in ['dsbn', 'adabn']:
                         self.feature.set_bn_choice('split')
+                    if params.bn_align_mode == 'dsconv':
+                        self.feature.set_conv_choice('split')
                     logit = self.classifier(self.feature(x_ux))
                     logit_x, logit_ux = logit[:x.shape[0]], logit[x.shape[0]:]
                 elif params.bn_align_mode == 'dan':
@@ -545,11 +547,18 @@ class BaselineTrain(nn.Module):
                 support_label = torch.arange(n_way).unsqueeze(1).repeat(1, n_shot).view(-1).numpy()
                 query_label = torch.arange(n_way).unsqueeze(1).repeat(1, n_query).view(-1).numpy()
 
-                if params.bn_align and (params.bn_align_mode == 'dsbn' or params.bn_align_mode == 'adabn'):
+                if params.bn_align_mode in ['dsbn', 'adabn']:
                     support = img[:, :n_shot].contiguous().view(-1, *img.shape[2:]).cuda()
                     query = img[:, n_shot:].contiguous().view(-1, *img.shape[2:]).cuda()
                     self.feature.set_bn_choice('b')
                     support_feature = self.feature(support).detach().cpu().numpy().reshape(n_way * n_shot, -1)
+                    query_feature = self.feature(query).detach().cpu().numpy().reshape(n_way * n_query, -1)
+                elif params.bn_align_mode == 'dsconv':
+                    support = img[:, :n_shot].contiguous().view(-1, *img.shape[2:]).cuda()
+                    query = img[:, n_shot:].contiguous().view(-1, *img.shape[2:]).cuda()
+                    self.feature.set_conv_choice('b')
+                    support_feature = self.feature(support).detach().cpu().numpy().reshape(n_way * n_shot, -1)
+                    self.feature.set_conv_choice('a')
                     query_feature = self.feature(query).detach().cpu().numpy().reshape(n_way * n_query, -1)
                 else:
                     img = img.cuda()

@@ -37,7 +37,7 @@ def parse_args(script):
         parser.add_argument('--pseudo_align', action='store_true')
         parser.add_argument('--startup'     , action='store_true')
         parser.add_argument('--bn_align'    , action='store_true')
-        parser.add_argument('--bn_align_mode', default='concat', choices=['concat', 'dan', 'dsbn', 'adabn', 'asbn'])
+        parser.add_argument('--bn_align_mode', default='concat', choices=['concat', 'dan', 'dsbn', 'adabn', 'asbn', 'dsconv'])
         parser.add_argument('--bn_align_lw' , default=1, type=float)
         parser.add_argument('--soft_label'  , action='store_true')
         parser.add_argument('--init_teacher', default='')

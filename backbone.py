@@ -288,6 +288,36 @@ class AdaptiveSharedBatchNorm(nn.BatchNorm2d):
                 exponential_average_factor, self.eps)
 
 
+class DSConv(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size, stride=1,
+                 padding=0, bias=True):
+        super().__init__()
+        self.conv0 = nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding, bias=bias)
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding, bias=bias)
+        self.conv2 = nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding, bias=bias)
+        self.choice = '0'
+
+    def forward(self, input):
+        if self.choice == '0':
+            return self.conv0(input)
+        elif self.choice == 'a':
+            self.choice = '0'
+            return self.conv0(input) + self.conv1(input)
+        elif self.choice == 'b':
+            self.choice = '0'
+            return self.conv0(input) + self.conv2(input)
+        elif self.choice == 'split':
+            self.choice = '0'
+            x1, x2 = torch.chunk(input, 2)
+            x1 = self.conv0(x1) + self.conv1(x1)
+            x2 = self.conv0(x2) + self.conv2(x2)
+            return torch.cat([x1, x2])
+
+    def set_choice(self, choice):
+        assert choice in ['0', 'a', 'b', 'split']
+        self.choice = choice
+
+
 # Simple ResNet Block
 class SimpleBlock(nn.Module):
     maml = False #Default
@@ -304,7 +334,7 @@ class SimpleBlock(nn.Module):
         else:
             self.C1 = nn.Conv2d(indim, outdim, kernel_size=3, stride=2 if half_res else 1, padding=1, bias=False)
             self.C2 = nn.Conv2d(outdim, outdim,kernel_size=3, padding=1,bias=False)
-            if self.bn == 'normal':
+            if self.bn in ['normal', 'dsconv']:
                 self.BN1 = nn.BatchNorm2d(outdim)
                 self.BN2 = nn.BatchNorm2d(outdim)
             elif self.bn == 'dan':
@@ -335,7 +365,7 @@ class SimpleBlock(nn.Module):
                 self.BNshortcut = BatchNorm2d_fw(outdim)
             else:
                 self.shortcut = nn.Conv2d(indim, outdim, 1, 2 if half_res else 1, bias=False)
-                if self.bn == 'normal':
+                if self.bn in ['normal', 'dsconv']:
                     self.BNshortcut = nn.BatchNorm2d(outdim)
                 elif self.bn == 'dan':
                     self.BNshortcut = DANormalization(outdim)
@@ -535,6 +565,9 @@ class ResNet(nn.Module):
                 bn1 = AdaBatchNorm(64)
             elif self.bn == 'asbn':
                 bn1 = AdaptiveSharedBatchNorm(64)
+            elif self.bn == 'dsconv':
+                conv1 = DSConv(3, 64, kernel_size=7, stride=2, padding=3, bias=False)
+                bn1 = nn.BatchNorm2d(64)
             else:
                 raise ValueError(self.bn)
 
@@ -579,6 +612,11 @@ class ResNet(nn.Module):
     def set_bn_choice(self, choice):
         for module in self.modules():
             if isinstance(module, DSBatchNorm) or isinstance(module, AdaBatchNorm):
+                module.set_choice(choice)
+
+    def set_conv_choice(self, choice):
+        for module in self.modules():
+            if isinstance(module, DSConv):
                 module.set_choice(choice)
 
 def Conv4():
