@@ -444,6 +444,43 @@ class BaselineTrain(nn.Module):
                 avg_pseudo_loss += pseudo_loss.item()
                 loss += params.bn_align_lw * pseudo_loss
 
+            elif params.classcontrast:
+                try:
+                    ux, uy, *_ = next(classcontrast_iter)
+                except:
+                    classcontrast_iter = iter(base_loader['classcontrast'])
+                    ux, uy, *_ = next(classcontrast_iter)
+                x, y = x.cuda(), y.cuda()
+                ux0, ux1 = ux[0].cuda(), ux[1].cuda()
+                x_ux = torch.cat([x, ux0, ux1])
+                fx_fux = self.feature(x_ux)
+                fx, fux0, fux1 = torch.chunk(fx_fux, 3)
+
+                x_ux = torch.cat([x, ux1])
+                fx_fux = self.feature(x_ux)
+                fx, fux1 = fx_fux[:x.shape[0]], fx_fux[x.shape[0]:]
+
+                loss = self.loss_fn(self.classifier(fx), y)
+                avg_loss = avg_loss + loss.item()
+
+                with torch.no_grad():
+                    prob0 = F.softmax(self.classifier(fux0), dim=-1)
+                    mask = prob0.max(dim=-1)[0] > self.params.classcontrast_th
+                logit1 = self.classifier(fux1)
+                if self.params.classcontrast_fn == 'dot':
+                    prob1 = F.softmax(logit1, -1)
+                    score = prob1.mm(prob0.t())
+                elif self.params.classcontrast_fn == 'kl':
+                    log_prob = F.log_softmax(logit1, -1)
+                    log_prob = log_prob.unsqueeze(1).repeat(1, prob0.shape[0], 1)
+                    prob0 = prob0.unsqueeze(0).repeat(log_prob.shape[0], 1, 1)
+                    score = - F.kl_div(log_prob, prob0, reduction='none').sum(-1)
+                labels = torch.arange(logit1.shape[0], dtype=torch.long).cuda()
+                classcontrast_loss = F.cross_entropy(score / self.params.classcontrast_t, labels, reduction='none')
+                classcontrast_loss = (classcontrast_loss * mask).mean()
+                avg_classcontrast_loss += classcontrast_loss.item()
+                loss += classcontrast_loss
+
             else:
                 loss, fx = self.forward_loss(x, y)
                 avg_loss = avg_loss + loss.item()
@@ -471,31 +508,6 @@ class BaselineTrain(nn.Module):
                 simclr_loss = self.loss_fn(logits, labels)
                 avg_simclr_loss += simclr_loss.item()
                 loss += simclr_loss
-
-            if params.classcontrast:
-                try:
-                    ux, uy, *_ = next(classcontrast_iter)
-                except:
-                    classcontrast_iter = iter(base_loader['classcontrast'])
-                    ux, uy, *_ = next(classcontrast_iter)
-                ux0, ux1 = ux[0].cuda(), ux[1].cuda()
-                with torch.no_grad():
-                    prob0 = F.softmax(self.classifier(self.feature(ux0)), dim=-1)
-                    mask = prob0.max(dim=-1)[0] > self.params.classcontrast_th
-                logit1 = self.classifier(self.feature(ux1))
-                if self.params.classcontrast_fn == 'dot':
-                    prob1 = F.softmax(logit1, -1)
-                    score = prob1.mm(prob0.t())
-                elif self.params.classcontrast_fn == 'kl':
-                    log_prob = F.log_softmax(logit1, -1)
-                    log_prob = log_prob.unsqueeze(1).repeat(1, prob0.shape[0], 1)
-                    prob0 = prob0.unsqueeze(0).repeat(log_prob.shape[0], 1, 1)
-                    score = - F.kl_div(log_prob, prob0, reduction='none').sum(-1)
-                labels = torch.arange(logit1.shape[0], dtype=torch.long).cuda()
-                classcontrast_loss = F.cross_entropy(score / self.params.classcontrast_t, labels, reduction='none')
-                classcontrast_loss = (classcontrast_loss * mask).mean()
-                avg_classcontrast_loss += classcontrast_loss.item()
-                loss += classcontrast_loss
 
             optimizer.zero_grad()
             loss.backward()
