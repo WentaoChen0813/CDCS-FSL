@@ -31,7 +31,8 @@ class BaselineTrain(nn.Module):
         self.num_class = num_class
         self.loss_fn = nn.CrossEntropyLoss()
         self.DBval = False  # only set True for CUB dataset, see issue #31
-        if params.pseudo_align or params.startup or params.bn_align or params.pseudomix or params.fixmatch_teacher:
+        if params.pseudo_align or params.startup or params.bn_align or params.pseudomix or params.fixmatch_teacher\
+                or params.fixmatch_prior:
             self.momentum = params.momentum
             self.threshold = params.threshold
             self.teacher_feature = copy.deepcopy(self.feature)
@@ -188,17 +189,19 @@ class BaselineTrain(nn.Module):
                                                                drop_last=True)
         return train_loader
 
-    def get_pseudo_loader(self, unlabeled_loader, soft_label=False):
+    def get_pseudo_loader(self, unlabeled_loader, soft_label=False, threshold=0, num_img=1):
         with torch.no_grad():
             selected_y = []
             selected_idx = []
             for x, _, idx in unlabeled_loader:
+                if num_img > 1:
+                    x = x[0]
                 confidence, pred, prob = self.teacher_forward(x)
-                selected_idx.append(idx[confidence > self.threshold])
+                selected_idx.append(idx[confidence > threshold])
                 if soft_label:
-                    selected_y.append(prob[confidence > self.threshold])
+                    selected_y.append(prob[confidence > threshold])
                 else:
-                    selected_y.append(pred[confidence > self.threshold])
+                    selected_y.append(pred[confidence > threshold])
             selected_idx = torch.cat(selected_idx).detach().cpu().numpy()
             selected_y = torch.cat(selected_y).detach().cpu()
 
@@ -358,6 +361,9 @@ class BaselineTrain(nn.Module):
         if (params.startup or params.bn_align) and epoch == 0:
             unlabeled_loader = self.get_pseudo_loader(base_loader['unlabeled'], soft_label=params.soft_label)
             base_loader['unlabeled'] = unlabeled_loader
+        if params.fixmatch_prior and epoch == 0:
+            fixmatch_loader = self.get_pseudo_loader(base_loader['fixmatch'], soft_label=True, num_img=2)
+            base_loader['fixmatch'] = fixmatch_loader
 
         for i, (x, y) in enumerate(train_loader):
             if params.pseudomix:
@@ -382,13 +388,7 @@ class BaselineTrain(nn.Module):
                     fixmatch_iter = iter(base_loader['fixmatch'])
                     ux, uy, *_ = next(fixmatch_iter)
                 x, y = x.cuda(), y.cuda()
-                ux = [uxi.cuda() for uxi in ux]
-                x_ux = torch.cat([x] + ux[1:], 0)
-                fx_fux = self.feature(x_ux)
-                fx, fux = fx_fux[:x.shape[0]], fx_fux[x.shape[0]:]
-                loss = self.loss_fn(self.classifier(fx), y)
-                avg_loss = avg_loss + loss.item()
-
+                ux, uy = [uxi.cuda() for uxi in ux], uy.cuda()
                 with torch.no_grad():
                     if self.params.fixmatch_teacher:
                         pred = self.teacher_classifier(self.teacher_feature(ux[0]))
@@ -400,14 +400,26 @@ class BaselineTrain(nn.Module):
                                                  (1 - self.params.distribution_m) * pred.mean(0)
                         pred = pred * (1. / self.num_class) / (self.pred_distribution.unsqueeze(0) + 1e-6)
                         pred = pred / pred.sum(dim=-1, keepdim=True)
+                    if params.fixmatch_prior:
+                        pred = params.fixmatch_lambda * uy + (1-params.fixmatch_lambda)*pred
                     pseudo_label = pred.max(dim=-1)[1].detach()
                     confidence = pred.max(dim=-1)[0].detach()
                     mask = confidence.ge(self.params.threshold)
                     if self.params.fixmatch_anchor > 1:
                         pseudo_label = pseudo_label.repeat(self.params.fixmatch_anchor)
                         mask = mask.repeat(self.params.fixmatch_anchor)
+                ux, pseudo_label = ux[1][mask], pseudo_label[mask]
+                x_ux = torch.cat([x, ux])
+                fx_fux = self.feature(x_ux)
+                fx, fux = fx_fux[:x.shape[0]], fx_fux[x.shape[0]:]
+                loss = self.loss_fn(self.classifier(fx), y)
+                avg_loss = avg_loss + loss.item()
 
-                fixmatch_loss = (F.cross_entropy(self.classifier(fux), pseudo_label, reduction='none') * mask).mean()
+                if pseudo_label.shape[0] > 0:
+                    fixmatch_loss = F.cross_entropy(self.classifier(fux), pseudo_label)
+                    fixmatch_loss *= (mask.float().sum()) / mask.shape[0]
+                else:
+                    fixmatch_loss = torch.tensor(0.).cuda()
                 avg_fixmatch_loss += fixmatch_loss.item()
                 loss += self.params.fixmatch_lw * fixmatch_loss
 

@@ -73,7 +73,7 @@ if __name__ == '__main__':
     # DEBUG
     # params.exp = 'debug'
     # params.gpu = '7'
-    # params.cross_domain = 'clipart'
+    # params.cross_domain = 'quickdraw'
     # params.method = 'baseline'
     # params.loss_type = 'euclidean'
     # params.pseudo_align = True
@@ -88,10 +88,11 @@ if __name__ == '__main__':
     # params.momentum = 0
     # params.simclr = True
     # params.fixmatch = True
+    # params.fixmatch_prior = True
     # params.threshold = 0.5
     # params.fixmatch_teacher = True
     # params.fixmatch_noaug = True
-    # params.update_teacher = 'epoch'
+    # params.update_teacher = 'none'
     # params.distribution_align = True
     # params.distribution_m = 1
     # params.fixmatch_gt = True
@@ -167,8 +168,10 @@ if __name__ == '__main__':
                 unlabeled_datamgr = SimpleDataManager(image_size, batch_size=params.fixmatch_bs)
                 unlabeled_loader = unlabeled_datamgr.get_data_loader(data_folder=unlabeled_folder,
                                                                      fixmatch_trans=True,
+                                                                     augtype=params.fixmatch_augtype,
                                                                      fixmatch_anchor=params.fixmatch_anchor,
-                                                                     add_label=True)
+                                                                     add_label=True,
+                                                                     with_idx=True)
                 base_loader['fixmatch'] = unlabeled_loader
             if params.classcontrast:
                 unlabeled_datamgr = SimpleDataManager(image_size, batch_size=params.classcontrast_bs)
