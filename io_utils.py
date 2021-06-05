@@ -55,6 +55,9 @@ def parse_args(script):
         parser.add_argument('--fixmatch_prior', action='store_true')
         parser.add_argument('--fixmatch_lambda', default=0., type=float)
         parser.add_argument('--fixmatch_augtype', default='fixmatch', choices=['fixmatch', 'geometry', 'geometry+crop'])
+        parser.add_argument('--ad_align'    , action='store_true')
+        parser.add_argument('--ad_align_type', default='cdan', choices=['cdan', 'dann'])
+        parser.add_argument('--ad_align_lw' , default=1, type=float)
         parser.add_argument('--distribution_align', action='store_true')
         parser.add_argument('--distribution_m', default=0.99, type=float)
         parser.add_argument('--classcontrast', action='store_true')
@@ -68,7 +71,7 @@ def parse_args(script):
         parser.add_argument('--pseudomix_fn', default='mixup', choices=['mixup', 'cutmix'])
         parser.add_argument('--pseudomix_bi', action='store_true')
         parser.add_argument('--momentum'    , default=0.6, type=float)
-        parser.add_argument('--threshold'   , default=0, type=float)
+        parser.add_argument('--threshold'   , default=0.5, type=float)
         parser.add_argument('--num_classes' , default=228, type=int, help='total number of classes in softmax, only used in baseline') #make it larger than the maximum label value in base class
         parser.add_argument('--save_freq'   , default=10, type=int, help='Save frequency')
         parser.add_argument('--start_epoch' , default=0, type=int,help ='Starting epoch')

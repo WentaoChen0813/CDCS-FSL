@@ -13,6 +13,7 @@ from torch.autograd import Variable
 import numpy as np
 import torch.nn.functional as F
 import torchvision
+from methods.CDAN import AdversarialNetwork, CDAN, DANN
 
 
 class BaselineTrain(nn.Module):
@@ -46,6 +47,11 @@ class BaselineTrain(nn.Module):
             )
         if params.fixmatch and params.distribution_align:
             self.register_buffer('pred_distribution', torch.ones(self.num_class) / self.num_class)
+        if params.ad_align:
+            if params.ad_align_type == 'cdan':
+                self.ad_net = AdversarialNetwork(self.feature.final_feat_dim*num_class, 1024)
+            elif params.ad_align_type == 'dann':
+                self.ad_net = AdversarialNetwork(self.feature.final_feat_dim, 1024)
 
     def init_teacher(self):
         for param_t, param_s in zip(self.teacher_feature.state_dict().values(), self.feature.state_dict().values()):
@@ -346,6 +352,7 @@ class BaselineTrain(nn.Module):
         avg_simclr_loss = 0
         avg_fixmatch_loss = 0
         avg_classcontrast_loss = 0
+        avg_ad_loss = 0
 
         if not isinstance(base_loader, dict):
             train_loader = base_loader
@@ -380,6 +387,88 @@ class BaselineTrain(nn.Module):
                 logit = self.classifier(fx)
                 loss = F.kl_div(F.log_softmax(logit, -1), y, reduction='batchmean')
                 avg_loss = avg_loss + loss.item()
+
+            elif params.fixmatch and params.ad_align:
+                try:
+                    ux, uy, *_ = next(fixmatch_iter)
+                except:
+                    fixmatch_iter = iter(base_loader['fixmatch'])
+                    ux, uy, *_ = next(fixmatch_iter)
+                x, y = x.cuda(), y.cuda()
+                ux, uy = [uxi.cuda() for uxi in ux], uy.cuda()
+
+                with torch.no_grad():
+                    pred = self.classifier(self.feature(ux[0]))
+                    pred = F.softmax(pred, dim=-1)
+                    if self.params.distribution_align:
+                        self.pred_distribution = self.params.distribution_m * self.pred_distribution + \
+                                                 (1 - self.params.distribution_m) * pred.mean(0)
+                        pred = pred * (1. / self.num_class) / (self.pred_distribution.unsqueeze(0) + 1e-6)
+                        pred = pred / pred.sum(dim=-1, keepdim=True)
+                    if params.fixmatch_prior:
+                        pred = params.fixmatch_lambda * uy + (1-params.fixmatch_lambda)*pred
+                    pseudo_label = pred.max(dim=-1)[1].detach()
+                    confidence = pred.max(dim=-1)[0].detach()
+                    mask = confidence.ge(self.params.threshold)
+                    if self.params.fixmatch_anchor > 1:
+                        pseudo_label = pseudo_label.repeat(self.params.fixmatch_anchor)
+                        mask = mask.repeat(self.params.fixmatch_anchor)
+
+                ux[1], pseudo_label = ux[1][mask], pseudo_label[mask]
+                x_ux = torch.cat([x] + ux)
+                fx_fux = self.feature(x_ux)
+                fx, fux0, fux1 = torch.split(fx_fux, [x.shape[0], ux[0].shape[0], ux[1].shape[0]])
+
+                lx = self.classifier(fx)
+                loss = self.loss_fn(lx, y)
+                avg_loss = avg_loss + loss.item()
+
+                if pseudo_label.shape[0] > 0:
+                    fixmatch_loss = F.cross_entropy(self.classifier(fux1), pseudo_label)
+                    fixmatch_loss *= (mask.float().sum()) / mask.shape[0]
+                else:
+                    fixmatch_loss = torch.tensor(0.).cuda()
+                avg_fixmatch_loss += fixmatch_loss.item()
+                loss += self.params.fixmatch_lw * fixmatch_loss
+
+                fx, lx = fx[:fux0.shape[0]], lx[:fux0.shape[0]]
+                fx_fux0 = torch.cat([fx, fux0])
+                if params.ad_align_type == 'cdan':
+                    lux0 = self.classifier(fux0)
+                    lx_lux0 = torch.cat([lx, lux0])
+                    px_pux0 = torch.softmax(lx_lux0, -1)
+                    ad_loss = CDAN([fx_fux0, px_pux0], self.ad_net)
+                elif params.ad_align_type == 'dann':
+                    ad_loss = DANN(fx_fux0, self.ad_net)
+                avg_ad_loss += ad_loss.item()
+                loss += params.ad_align_lw * ad_loss
+
+            elif params.ad_align:
+                try:
+                    ux, uy, *_ = next(unlabeled_iter)
+                except:
+                    unlabeled_iter = iter(base_loader['unlabeled'])
+                    ux, uy, *_ = next(unlabeled_iter)
+
+                x_ux = torch.cat([x, ux])
+                fx_fux = self.feature(x_ux.cuda())
+                fx, fux = fx_fux[:x.shape[0]], fx_fux[x.shape[0]:]
+                lx = self.classifier(fx)
+                loss = self.loss_fn(lx, y.cuda())
+                avg_loss = avg_loss + loss.item()
+
+                fx = fx[:fux.shape[0]]
+                fx_fux = torch.cat([fx, fux])
+                if params.ad_align_type == 'dann':
+                    ad_loss = DANN(fx_fux, self.ad_net)
+                elif params.ad_align_type == 'cdan':
+                    lux = self.classifier(fux)
+                    lx = lx[:lux.shape[0]]
+                    lx_lux = torch.cat([lx, lux])
+                    px_pux = torch.softmax(lx_lux, -1)
+                    ad_loss = CDAN([fx_fux, px_pux], self.ad_net)
+                avg_ad_loss += ad_loss.item()
+                loss += params.ad_align_lw * ad_loss
 
             elif params.fixmatch:
                 try:
@@ -537,6 +626,8 @@ class BaselineTrain(nn.Module):
                     print_line += ' | Fixmatch_loss {:f}'.format(avg_fixmatch_loss / (i + 1))
                 if self.params.classcontrast:
                     print_line += ' | Classcontrast_loss {:f}'.format(avg_classcontrast_loss / (i + 1))
+                if self.params.ad_align:
+                    print_line += ' | Ad_loss {:f}'.format(avg_ad_loss / (i + 1))
                 print(print_line)
 
             if hasattr(self, 'teacher_feature'):
@@ -553,6 +644,8 @@ class BaselineTrain(nn.Module):
             loss_dict['fixmatch_loss'] = avg_fixmatch_loss / (i + 1)
         if self.params.classcontrast:
             loss_dict['classcontrast_loss'] = avg_classcontrast_loss / (i + 1)
+        if self.params.ad_align:
+            loss_dict['ad_loss'] = avg_ad_loss / (i + 1)
         return loss_dict
 
     def test_loop(self, epoch, val_loader, params):

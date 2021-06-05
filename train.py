@@ -33,7 +33,7 @@ def train(base_loader, val_loader, model, optimization, start_epoch, stop_epoch,
         optimizer = torch.optim.Adam(model.parameters(), lr=params.lr)
         scheduler = None
     elif optimization == 'sgd':
-        optimizer = torch.optim.SGD(model.parameters(), lr=params.lr, momentum=0.9, weight_decay=1e-4, nesterov=False)
+        optimizer = torch.optim.SGD(model.parameters(), lr=params.lr, momentum=0.9, weight_decay=5e-4, nesterov=True)
         scheduler = lr_scheduler.CosineAnnealingLR(optimizer, params.stop_epoch, eta_min=1e-6)
     else:
         raise ValueError('Unknown optimization, please define by yourself')
@@ -73,7 +73,7 @@ if __name__ == '__main__':
     # DEBUG
     # params.exp = 'debug'
     # params.gpu = '7'
-    # params.cross_domain = 'quickdraw'
+    # params.cross_domain = 'clipart'
     # params.method = 'baseline'
     # params.loss_type = 'euclidean'
     # params.pseudo_align = True
@@ -101,13 +101,15 @@ if __name__ == '__main__':
     # params.classcontrast_fn = 'kl'
     # params.pseudomix = True
     # params.pseudomix_fn = 'cutmix'
+    # params.ad_align = True
+    # params.ad_align_type = 'dann'
     # params.rot_align = False
     # params.proto_align = True
     # params.weight_proto = True
     # params.ada_proto = False
     # params.batch_size = 128
     # params.resume = True
-    # params.checkpoint = 'checkpoints/DomainNet/clipart/ResNet18_baseline/bn_align_dsconv'
+    # params.checkpoint = 'checkpoints/DomainNet/painting/ResNet18_baseline/0'
     # params.checkpoint = 'checkpoints/DomainNet/painting/ResNet18_baseline/0'
     # params.save_iter = 20
     # params.test = True
@@ -376,29 +378,28 @@ if __name__ == '__main__':
     # exit()
 
     # target_acc = []
-    # save_iters = [-1] #+ [x for x in range(0, 40, 10)]
-    # for mode in ['eval', 'train']:
-    #     for save_iter in save_iters:
-    #         checkpoint_dir = params.checkpoint
-    #         resume_file = get_resume_file(checkpoint_dir, save_iter)
-    #         tmp = torch.load(resume_file)
-    #         model.load_state_dict(tmp['state'], strict=False)
-    #         if mode == 'train':
-    #             model.train()
-    #         else:
-    #             model.eval()
-    #         acc_fc = 0.
-    #         with torch.no_grad():
-    #             for x, y, *_ in unlabeled_loader:
-    #                 x, y = x.cuda(), y.cuda()
-    #                 fx = model.feature(x)
-    #                 score = model.classifier(fx)
-    #                 pred = score.max(dim=-1)[1]
-    #                 confidence = torch.nn.functional.softmax(score, -1).max(-1)[0]
-    #                 acc_fc += float((pred == y).sum().item()) / pred.shape[0]
-    #         acc_fc /= len(unlabeled_loader)
-    #         target_acc.append(acc_fc)
-    #         print(f'target_acc: {target_acc}')
+    # save_iters = [0, 10]
+    # # for mode in ['eval', 'train']:
+    # model.train()
+    # for save_iter in save_iters:
+    #     checkpoint_dir = params.checkpoint
+    #     resume_file = get_resume_file(checkpoint_dir, save_iter)
+    #     tmp = torch.load(resume_file)
+    #     model.load_state_dict(tmp['state'], strict=False)
+    #     acc_fc = 0.
+    #     num = 0.
+    #     with torch.no_grad():
+    #         for x, y, *_ in base_loader['unlabeled']:
+    #             x, y = x.cuda(), y.cuda()
+    #             fx = model.feature(x)
+    #             score = model.classifier(fx)
+    #             pred = score.max(dim=-1)[1]
+    #             confidence = torch.nn.functional.softmax(score, -1).max(-1)[0]
+    #             acc_fc += (pred == y).sum().item()
+    #             num += pred.shape[0]
+    #     acc_fc /= num
+    #     target_acc.append(acc_fc)
+    #     print(f'target_acc: {target_acc}')
     # exit()
 
     # mean, var = 0., 0.
