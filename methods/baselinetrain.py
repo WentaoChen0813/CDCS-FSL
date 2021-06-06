@@ -13,7 +13,7 @@ from torch.autograd import Variable
 import numpy as np
 import torch.nn.functional as F
 import torchvision
-from methods.CDAN import AdversarialNetwork, CDAN, DANN
+from methods.CDAN import AdversarialNetwork, CDAN, DANN, CADA
 
 
 class BaselineTrain(nn.Module):
@@ -52,6 +52,8 @@ class BaselineTrain(nn.Module):
                 self.ad_net = AdversarialNetwork(self.feature.final_feat_dim*num_class, 1024)
             elif params.ad_align_type == 'dann':
                 self.ad_net = AdversarialNetwork(self.feature.final_feat_dim, 1024)
+            elif params.ad_align_type == 'cada':
+                self.ad_net = AdversarialNetwork(self.feature.final_feat_dim*2, 1024)
 
     def init_teacher(self):
         for param_t, param_s in zip(self.teacher_feature.state_dict().values(), self.feature.state_dict().values()):
@@ -414,6 +416,7 @@ class BaselineTrain(nn.Module):
                         pseudo_label = pseudo_label.repeat(self.params.fixmatch_anchor)
                         mask = mask.repeat(self.params.fixmatch_anchor)
 
+                pseudo_label0 = pseudo_label
                 ux[1], pseudo_label = ux[1][mask], pseudo_label[mask]
                 x_ux = torch.cat([x] + ux)
                 fx_fux = self.feature(x_ux)
@@ -431,7 +434,7 @@ class BaselineTrain(nn.Module):
                 avg_fixmatch_loss += fixmatch_loss.item()
                 loss += self.params.fixmatch_lw * fixmatch_loss
 
-                fx, lx = fx[:fux0.shape[0]], lx[:fux0.shape[0]]
+                fx, lx, y0 = fx[:fux0.shape[0]], lx[:fux0.shape[0]], y[:fux0.shape[0]]
                 fx_fux0 = torch.cat([fx, fux0])
                 if params.ad_align_type == 'cdan':
                     lux0 = self.classifier(fux0)
@@ -440,6 +443,8 @@ class BaselineTrain(nn.Module):
                     ad_loss = CDAN([fx_fux0, px_pux0], self.ad_net)
                 elif params.ad_align_type == 'dann':
                     ad_loss = DANN(fx_fux0, self.ad_net)
+                elif params.ad_align_type == 'cada':
+                    ad_loss = CADA([fx, fux0], [y0, pseudo_label0], self.ad_net)
                 avg_ad_loss += ad_loss.item()
                 loss += params.ad_align_lw * ad_loss
 

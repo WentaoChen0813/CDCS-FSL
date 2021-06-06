@@ -56,7 +56,7 @@ def parse_args(script):
         parser.add_argument('--fixmatch_lambda', default=0., type=float)
         parser.add_argument('--fixmatch_augtype', default='fixmatch', choices=['fixmatch', 'geometry', 'geometry+crop'])
         parser.add_argument('--ad_align'    , action='store_true')
-        parser.add_argument('--ad_align_type', default='cdan', choices=['cdan', 'dann'])
+        parser.add_argument('--ad_align_type', default='cdan', choices=['cdan', 'dann', 'cada'])
         parser.add_argument('--ad_align_lw' , default=1, type=float)
         parser.add_argument('--distribution_align', action='store_true')
         parser.add_argument('--distribution_m', default=0.99, type=float)

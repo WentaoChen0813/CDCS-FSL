@@ -3,6 +3,7 @@
 import numpy as np
 import torch
 import torch.nn as nn
+import random
 
 
 def calc_coeff(iter_num, high=1.0, low=0.0, alpha=10.0, max_iter=10000.0):
@@ -41,7 +42,7 @@ class AdversarialNetwork(nn.Module):
     self.alpha = 10
     self.low = 0.0
     self.high = 1.0
-    self.max_iter = 10000.0
+    self.max_iter = 500000.0
 
   def forward(self, x):
     if self.training:
@@ -101,4 +102,43 @@ def DANN(features, ad_net):
     ad_out = ad_net(features)
     batch_size = ad_out.size(0) // 2
     dc_target = torch.from_numpy(np.array([[1]] * batch_size + [[0]] * batch_size)).float().cuda()
+    return nn.BCELoss()(ad_out, dc_target)
+
+def CADA(features, labels, ad_net):
+    fs, ft = features
+    ys, yt = labels
+    pos, neg = [], []
+    for i in range(ys.shape[0]):
+        idt = (yt == ys[i]).nonzero().view(-1).contiguous()
+        if len(idt) > 0:
+            ids = ys == ys[i]
+            ids[i] = False
+            ids = ids.nonzero().view(-1).contiguous()
+            if len(ids) > 0:
+                min_len = min(len(ids), len(idt))
+                ids = ids[:min_len]
+                idt = idt[:min_len]
+                idi = torch.tensor([i] * len(ids)).cuda()
+                pos.append(torch.stack([idi, ids], dim=-1))
+                neg.append(torch.stack([idi, idt], dim=-1))
+
+    if len(pos) == 0:
+        return torch.tensor(0.).cuda()
+    pos = torch.cat(pos)
+    neg = torch.cat(neg)
+    if pos.shape[0] > ys.shape[0]:
+        idx = random.sample(range(pos.shape[0]), ys.shape[0])
+        idx = torch.tensor(idx).cuda()
+        pos, neg = pos[idx], neg[idx]
+    fp = torch.cat([fs[pos[:,0]], fs[pos[:,1]]], dim=-1)
+    fp2 = torch.cat([fs[pos[:,1]], fs[pos[:,0]]], dim=-1)
+    fp = torch.cat([fp, fp2], dim=0)
+
+    fn = torch.cat([fs[neg[:,0]], ft[neg[:,1]]], dim=-1)
+    fn2 = torch.cat([ft[neg[:,1]], fs[neg[:,0]]], dim=-1)
+    fn = torch.cat([fn, fn2], dim=0)
+
+    f = torch.cat([fp, fn])
+    ad_out = ad_net(f)
+    dc_target = torch.tensor([[1]] * fp.shape[0] + [[0]] * fn.shape[0]).float().cuda()
     return nn.BCELoss()(ad_out, dc_target)

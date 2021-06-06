@@ -72,7 +72,7 @@ if __name__ == '__main__':
     params = parse_args('train')
     # DEBUG
     # params.exp = 'debug'
-    # params.gpu = '7'
+    # params.gpu = '3'
     # params.cross_domain = 'clipart'
     # params.method = 'baseline'
     # params.loss_type = 'euclidean'
@@ -102,7 +102,7 @@ if __name__ == '__main__':
     # params.pseudomix = True
     # params.pseudomix_fn = 'cutmix'
     # params.ad_align = True
-    # params.ad_align_type = 'dann'
+    # params.ad_align_type = 'cada'
     # params.rot_align = False
     # params.proto_align = True
     # params.weight_proto = True
