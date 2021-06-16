@@ -6,6 +6,7 @@ import utils
 from tqdm import tqdm
 from sklearn.linear_model import LogisticRegression
 import copy
+import random
 
 import torch
 import torch.nn as nn
@@ -54,6 +55,16 @@ class BaselineTrain(nn.Module):
                 self.ad_net = AdversarialNetwork(self.feature.final_feat_dim, 1024)
             elif params.ad_align_type == 'cada':
                 self.ad_net = AdversarialNetwork(self.feature.final_feat_dim*2, 1024)
+        if params.proto_align:
+            self.register_buffer('target_proto', torch.zeros(self.num_class, self.feature.final_feat_dim))
+            self.iter_num = 0
+            self.max_iter = 50000
+            self.alpha = params.proto_align_a
+            self.proto_align_lw = 0.
+            if params.proto_align_norm == -1:
+                self.proto_align_norm = nn.Parameter(torch.tensor(4.))
+        if params.fixmatch_norm == -1:
+            self.fixmatch_norm = nn.Parameter(torch.tensor(10.))
 
     def init_teacher(self):
         for param_t, param_s in zip(self.teacher_feature.state_dict().values(), self.feature.state_dict().values()):
@@ -65,9 +76,9 @@ class BaselineTrain(nn.Module):
 
     def update_teacher(self):
         for param_t, param_s in zip(self.teacher_feature.state_dict().values(), self.feature.state_dict().values()):
-            param_t.data = self.momentum * param_t.data + (1 - self.momentum) * param_s.data
+            param_t.data.copy_(self.momentum * param_t.data + (1 - self.momentum) * param_s.data)
         for param_t, param_s in zip(self.teacher_classifier.state_dict().values(), self.classifier.state_dict().values()):
-            param_t.data = self.momentum * param_t.data + (1 - self.momentum) * param_s.data
+            param_t.data.copy_(self.momentum * param_t.data + (1 - self.momentum) * param_s.data)
 
     def forward(self, x):
         x = x.cuda()
@@ -347,6 +358,21 @@ class BaselineTrain(nn.Module):
 
         return (bbx1, bby1, bbx2, bby2), new_lam
 
+    def update_target_proto(self, fux, pseudo_label):
+        with torch.no_grad():
+            protos = [0 for i in range(self.num_class)]
+            sample_num = [0 for i in range(self.num_class)]
+            for i, cls in enumerate(pseudo_label.cpu().numpy()):
+                protos[cls] += fux[i]
+                sample_num[cls] += 1
+            for i in range(self.num_class):
+                if sample_num[i] > 0:
+                    protos[i] /= sample_num[i]
+                    self.target_proto[i] = self.params.proto_align_m * self.target_proto[i] +\
+                                           (1-self.params.proto_align_m) * protos[i]
+        self.iter_num += 1
+        self.proto_align_lw = 2 / (1 + np.exp(-self.alpha * self.iter_num / self.max_iter)) - 1
+
     def train_loop(self, epoch, base_loader, optimizer, params=None):
         print_freq = 10
         avg_loss = 0
@@ -355,6 +381,7 @@ class BaselineTrain(nn.Module):
         avg_fixmatch_loss = 0
         avg_classcontrast_loss = 0
         avg_ad_loss = 0
+        avg_proto_loss = 0
 
         if not isinstance(base_loader, dict):
             train_loader = base_loader
@@ -389,6 +416,73 @@ class BaselineTrain(nn.Module):
                 logit = self.classifier(fx)
                 loss = F.kl_div(F.log_softmax(logit, -1), y, reduction='batchmean')
                 avg_loss = avg_loss + loss.item()
+
+            elif params.fixmatch and params.proto_align:
+                try:
+                    ux, uy, *_ = next(fixmatch_iter)
+                except:
+                    fixmatch_iter = iter(base_loader['fixmatch'])
+                    ux, uy, *_ = next(fixmatch_iter)
+                ux, uy = [uxi.cuda() for uxi in ux], uy.cuda()
+                xw, xs, y = x[0].cuda(), x[1].cuda(), y.cuda()
+
+                with torch.no_grad():
+                    fuxw = self.feature(ux[0])
+                    pred = self.classifier(fuxw)
+                    pred = F.softmax(pred, dim=-1)
+                    if self.params.distribution_align:
+                        self.pred_distribution = self.params.distribution_m * self.pred_distribution + \
+                                                 (1 - self.params.distribution_m) * pred.mean(0)
+                        pred = pred * (1. / self.num_class) / (self.pred_distribution.unsqueeze(0) + 1e-6)
+                        pred = pred / pred.sum(dim=-1, keepdim=True)
+                    if params.fixmatch_prior:
+                        pred = params.fixmatch_lambda * uy + (1-params.fixmatch_lambda)*pred
+                    pseudo_label = pred.max(dim=-1)[1].detach()
+                    confidence = pred.max(dim=-1)[0].detach()
+                    mask = confidence.ge(self.params.threshold)
+                    if self.params.fixmatch_anchor > 1:
+                        pseudo_label = pseudo_label.repeat(self.params.fixmatch_anchor)
+                        mask = mask.repeat(self.params.fixmatch_anchor)
+
+                pseudo_label0 = pseudo_label
+                ux, pseudo_label = ux[1][mask], pseudo_label[mask]
+                x_ux = torch.cat([xw, xs, ux])
+                fx_fux = self.feature(x_ux)
+                fxw, fxs, fux = torch.split(fx_fux, [xw.shape[0], xs.shape[0], ux.shape[0]])
+
+                loss = self.loss_fn(self.classifier(fxw), y)
+                avg_loss = avg_loss + loss.item()
+
+                if pseudo_label.shape[0] > 0:
+                    if params.fixmatch_norm == 0:
+                        fixmatch_loss = F.cross_entropy(self.classifier(fux), pseudo_label)
+                    elif params.fixmatch_norm == -1:
+                        dist = ((F.normalize(fux).unsqueeze(1) - F.normalize(self.classifier.weight).unsqueeze(0)) ** 2).sum(-1)
+                        dist *= self.fixmatch_norm
+                        fixmatch_loss = self.loss_fn(-dist, pseudo_label)
+                    else:
+                        dist = ((F.normalize(fux).unsqueeze(1) - F.normalize(self.classifier.weight).unsqueeze(0)) ** 2).sum(-1)
+                        dist *= params.fixmatch_norm
+                        fixmatch_loss = self.loss_fn(-dist, pseudo_label)
+                    fixmatch_loss *= (mask.float().sum()) / mask.shape[0]
+                else:
+                    fixmatch_loss = torch.tensor(0.).cuda()
+                avg_fixmatch_loss += fixmatch_loss.item()
+                loss += self.params.fixmatch_lw * fixmatch_loss
+
+                if params.proto_align_norm == 0:
+                    dist = (fxs.unsqueeze(1) - self.target_proto.unsqueeze(0)) ** 2
+                    dist = dist.sum(-1).sqrt()
+                elif params.proto_align_norm == -1:
+                    dist = ((F.normalize(fxs).unsqueeze(1) - F.normalize(self.target_proto).unsqueeze(0)) ** 2).sum(-1)
+                    dist *= self.proto_align_norm
+                else:
+                    dist = ((F.normalize(fxs).unsqueeze(1) - F.normalize(self.target_proto).unsqueeze(0)) ** 2).sum(-1)
+                    dist *= params.proto_align_norm
+                proto_loss = self.loss_fn(-dist, y)
+                avg_proto_loss += proto_loss
+                loss += self.proto_align_lw * proto_loss
+                self.update_target_proto(fuxw, pseudo_label0)
 
             elif params.fixmatch and params.ad_align:
                 try:
@@ -510,7 +604,16 @@ class BaselineTrain(nn.Module):
                 avg_loss = avg_loss + loss.item()
 
                 if pseudo_label.shape[0] > 0:
-                    fixmatch_loss = F.cross_entropy(self.classifier(fux), pseudo_label)
+                    if params.fixmatch_norm == 0:
+                        fixmatch_loss = F.cross_entropy(self.classifier(fux), pseudo_label)
+                    elif params.fixmatch_norm == -1:
+                        dist = ((F.normalize(fux).unsqueeze(1) - F.normalize(self.classifier.weight).unsqueeze(0)) ** 2).sum(-1)
+                        dist *= self.fixmatch_norm
+                        fixmatch_loss = self.loss_fn(-dist, pseudo_label)
+                    else:
+                        dist = ((F.normalize(fux).unsqueeze(1) - F.normalize(self.classifier.weight).unsqueeze(0)) ** 2).sum(-1)
+                        dist *= params.fixmatch_norm
+                        fixmatch_loss = self.loss_fn(-dist, pseudo_label)
                     fixmatch_loss *= (mask.float().sum()) / mask.shape[0]
                 else:
                     fixmatch_loss = torch.tensor(0.).cuda()
@@ -633,6 +736,8 @@ class BaselineTrain(nn.Module):
                     print_line += ' | Classcontrast_loss {:f}'.format(avg_classcontrast_loss / (i + 1))
                 if self.params.ad_align:
                     print_line += ' | Ad_loss {:f}'.format(avg_ad_loss / (i + 1))
+                if self.params.proto_align:
+                    print_line += ' | Proto_loss {:f}'.format(avg_proto_loss / (i + 1))
                 print(print_line)
 
             if hasattr(self, 'teacher_feature'):
@@ -651,6 +756,8 @@ class BaselineTrain(nn.Module):
             loss_dict['classcontrast_loss'] = avg_classcontrast_loss / (i + 1)
         if self.params.ad_align:
             loss_dict['ad_loss'] = avg_ad_loss / (i + 1)
+        if self.params.proto_align:
+            loss_dict['proto_loss'] = avg_proto_loss / (i + 1)
         return loss_dict
 
     def test_loop(self, epoch, val_loader, params):

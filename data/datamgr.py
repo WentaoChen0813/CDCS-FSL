@@ -15,10 +15,11 @@ import os
 
 
 class TransformLoader:
-    def __init__(self, image_size,
+    def __init__(self, image_size, fixmatch_resize=False,
                  normalize_param=dict(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
                  jitter_param=dict(Brightness=0.4, Contrast=0.4, Color=0.4)):
         self.image_size = image_size
+        self.fixmatch_resize = fixmatch_resize
         self.normalize_param = normalize_param
         self.jitter_param = jitter_param
 
@@ -32,7 +33,11 @@ class TransformLoader:
         elif transform_type == 'CenterCrop':
             return method(self.image_size)
         elif transform_type == 'Resize':
-            return method([int(self.image_size * 1.15), int(self.image_size * 1.15)])
+            # Attention: Fixmatch resize smaller edge to target size
+            if self.fixmatch_resize:
+                return method(int(self.image_size * 1.15))
+            else:
+                return method([int(self.image_size * 1.15), int(self.image_size * 1.15)])
         elif transform_type == 'Normalize':
             return method(**self.normalize_param)
         else:
@@ -116,6 +121,7 @@ class FixMatchTransform:
     def __init__(self, size=224, n_anchor=1, has_weak=True, augtype='fixmatch'):
         self.weak = transforms.Compose([
             transforms.RandomHorizontalFlip(),
+            # Attention: resize smaller edge to target size
             transforms.Resize(int(size * 1.15)),
             transforms.CenterCrop(size)])
         self.strong = transforms.Compose([
@@ -231,7 +237,7 @@ class SimpleDataManager(DataManager):
 
 
 class SetDataManager(DataManager):
-    def __init__(self, image_size, n_way, n_support, n_query, n_episode=-1):
+    def __init__(self, image_size, n_way, n_support, n_query, n_episode=-1, fixmatch_resize=False):
         super(SetDataManager, self).__init__()
         self.image_size = image_size
         self.n_way = n_way
@@ -240,7 +246,7 @@ class SetDataManager(DataManager):
         self.n_query = n_query
         self.n_episode = n_episode
 
-        self.trans_loader = TransformLoader(image_size)
+        self.trans_loader = TransformLoader(image_size, fixmatch_resize)
 
     def get_data_loader(self, data_file=None, data_folder=None, aug=False,
                         fix_seed=False):  # parameters that would change on train/val set

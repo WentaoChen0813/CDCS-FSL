@@ -222,7 +222,7 @@ class RandAugmentMC(object):
         self.n = n
         self.m = m
         self.augtype = augtype
-        if augtype == 'fixmatch':
+        if 'fixmatch' in augtype:
             self.augment_pool = fixmatch_augment_pool()
         elif (augtype == 'geometry') or (augtype == 'geometry+crop') :
             self.augment_pool = geometry_augment_pool()
@@ -234,6 +234,6 @@ class RandAugmentMC(object):
             if random.random() < 0.5:
                 img = op(img, v=v, max_v=max_v, bias=bias)
         img = CutoutAbs(img, int(224*0.5))
-        if self.augtype == 'geometry+crop':
+        if 'crop' in self.augtype:
             img = torchvision.transforms.RandomResizedCrop(224, scale=(0.5, 1))(img)
         return img

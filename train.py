@@ -72,20 +72,20 @@ if __name__ == '__main__':
     params = parse_args('train')
     # DEBUG
     # params.exp = 'debug'
-    # params.gpu = '3'
+    # params.gpu = '4'
     # params.cross_domain = 'clipart'
     # params.method = 'baseline'
     # params.loss_type = 'euclidean'
     # params.pseudo_align = True
     # params.soft_label = True
-    # params.threshold = 0
+    # params.threshold = 0.5
     # params.startup = True
     # params.bn_align = True
     # params.bn_align_mode = 'dsconv'
     # params.init_teacher = 'checkpoints/DomainNet/painting/ResNet18_baseline/0/80.tar'
     # params.update_teacher = 'none'
     # params.init_student = 'feature'
-    # params.momentum = 0
+    # params.momentum = 0.99
     # params.simclr = True
     # params.fixmatch = True
     # params.fixmatch_prior = True
@@ -103,13 +103,14 @@ if __name__ == '__main__':
     # params.pseudomix_fn = 'cutmix'
     # params.ad_align = True
     # params.ad_align_type = 'cada'
+    # params.proto_align = True
     # params.rot_align = False
     # params.proto_align = True
     # params.weight_proto = True
     # params.ada_proto = False
     # params.batch_size = 128
     # params.resume = True
-    # params.checkpoint = 'checkpoints/DomainNet/painting/ResNet18_baseline/0'
+    # params.checkpoint = 'checkpoints/DomainNet/clipart/ResNet18_baseline/pseudo_align_th0.5_m0.99_val'
     # params.checkpoint = 'checkpoints/DomainNet/painting/ResNet18_baseline/0'
     # params.save_iter = 20
     # params.test = True
@@ -143,8 +144,8 @@ if __name__ == '__main__':
             if params.reverse_sq:
                 val_folder = val_folder[::-1]
             unlabeled_folder = [f'../dataset/DomainNet/{params.cross_domain}/base',
-                                f'../dataset/DomainNet/{params.cross_domain}/val',
-                                f'../dataset/DomainNet/{params.cross_domain}/novel']
+                                f'../dataset/DomainNet/{params.cross_domain}/val',]
+                                # f'../dataset/DomainNet/{params.cross_domain}/novel']
     else:
         raise ValueError('unknown dataset')
 
@@ -153,10 +154,11 @@ if __name__ == '__main__':
 
     if params.method in ['baseline', 'baseline++']:
         base_datamgr = SimpleDataManager(image_size, batch_size=params.batch_size)
-        base_loader = base_datamgr.get_data_loader(data_folder=base_folder, aug=params.train_aug, drop_last=True)
+        base_loader = base_datamgr.get_data_loader(data_folder=base_folder, aug=params.train_aug, drop_last=True,
+                                                   fixmatch_trans=params.proto_align, augtype=params.fixmatch_augtype)
 
         few_shot_params = dict(n_way=params.test_n_way, n_support=params.n_shot)
-        val_datamgr = SetDataManager(image_size, n_query=15, n_episode=params.n_episode, **few_shot_params)
+        val_datamgr = SetDataManager(image_size, fixmatch_resize=params.proto_align, n_query=15, n_episode=params.n_episode, **few_shot_params)
         val_loader = val_datamgr.get_data_loader(data_folder=val_folder, aug=False, fix_seed=True)
 
         if params.cross_domain:
@@ -302,66 +304,71 @@ if __name__ == '__main__':
     # DEBUG
     # source_acc_fc = []
     # source_acc_proto = []
+    # source_diff = []
     # target_acc_fc = []
     # target_acc_proto = []
     # target_diff = []
-    # for save_iter in range(0, 100, 10):
+    # for save_iter in range(0, 40, 10):
     #     checkpoint_dir = params.checkpoint
     #     resume_file = get_resume_file(checkpoint_dir, save_iter)
     #     tmp = torch.load(resume_file)
     #     model.load_state_dict(tmp['state'], strict=False)
-    #     acc_fc = 0.
-    #     proto = [0] * model.num_class
-    #     sample_num = [0] * model.num_class
-    #     with torch.no_grad():
-    #         for x, y in base_loader[0]:
-    #             x, y = x.cuda(), y.cuda()
-    #             fx = model.feature(x)
-    #             score = model.classifier(fx)
-    #             pred = score.max(dim=-1)[1]
-    #             acc_fc += float((pred==y).sum().item()) / pred.shape[0]
-    #             for i in range(fx.shape[0]):
-    #                 proto[y[i]] += fx[i]
-    #                 sample_num[y[i]] += 1
-    #     acc_fc /= len(base_loader[0])
-    #     for i in range(model.num_class):
-    #         proto[i] /= sample_num[i]
-    #     proto = torch.stack(proto)
-    #     acc_proto = 0.
-    #     with torch.no_grad():
-    #         for x, y in base_loader[0]:
-    #             x, y = x.cuda(), y.cuda()
-    #             fx = model.feature(x)
-    #             score = - ((fx.unsqueeze(1) - proto.unsqueeze(0)) ** 2).sum(dim=-1)
-    #             pred = score.max(dim=-1)[1]
-    #             acc_proto += float((pred == y).sum().item()) / pred.shape[0]
-    #     acc_proto /= len(base_loader[0])
-    #     source_acc_fc.append(acc_fc)
-    #     source_acc_proto.append(acc_proto)
-    #
-    #     acc_fc, acc_proto, diff = 0., 0., 0.
-    #     with torch.no_grad():
-    #         for x, y, *_ in unlabeled_loader:
-    #             x, y = x[0].cuda(), y.cuda()
-    #             fx = model.feature(x)
-    #             score = model.classifier(fx)
-    #             pred = score.max(dim=-1)[1]
-    #             acc_fc += float((pred == y).sum().item()) / pred.shape[0]
-    #             score = - ((fx.unsqueeze(1) - proto.unsqueeze(0)) ** 2).sum(dim=-1)
-    #             pred2 = score.max(dim=-1)[1]
-    #             acc_proto += float((pred2 == y).sum().item()) / pred2.shape[0]
-    #             diff += float((pred2 == pred).sum().item()) / pred.shape[0]
-    #     acc_fc /= len(unlabeled_loader)
-    #     acc_proto /= len(unlabeled_loader)
-    #     diff /= len(unlabeled_loader)
-    #     target_acc_fc.append(acc_fc)
-    #     target_acc_proto.append(acc_proto)
-    #     target_diff.append(diff)
-    #     print(f'source_acc_fc: {source_acc_fc}')
-    #     print(f'source_acc_proto: {source_acc_proto}')
-    #     print(f'target_acc_fc: {target_acc_fc}')
-    #     print(f'target_acc_proto: {target_acc_proto}')
-    #     print(f'target_diff: {target_diff}')
+    #     model.eval()
+        # acc_fc = 0.
+        # proto = [0] * model.num_class
+        # sample_num = [0] * model.num_class
+        # with torch.no_grad():
+        #     for x, y in base_loader[0]:
+        #         x, y = x.cuda(), y.cuda()
+        #         fx = model.feature(x)
+        #         score = model.classifier(fx)
+        #         pred = score.max(dim=-1)[1]
+        #         acc_fc += float((pred==y).sum().item()) / pred.shape[0]
+        #         for i in range(fx.shape[0]):
+        #             proto[y[i]] += fx[i]
+        #             sample_num[y[i]] += 1
+        # acc_fc /= len(base_loader[0])
+        # for i in range(model.num_class):
+        #     proto[i] /= sample_num[i]
+        # proto = torch.stack(proto)
+        # acc_proto = 0.
+        # with torch.no_grad():
+        #     for x, y in base_loader[0]:
+        #         x, y = x.cuda(), y.cuda()
+        #         fx = model.feature(x)
+        #         score = - ((fx.unsqueeze(1) - proto.unsqueeze(0)) ** 2).sum(dim=-1)
+        #         pred = score.max(dim=-1)[1]
+        #         acc_proto += float((pred == y).sum().item()) / pred.shape[0]
+        # acc_proto /= len(base_loader[0])
+        # source_acc_fc.append(acc_fc)
+        # source_acc_proto.append(acc_proto)
+
+        # acc_fc, acc_proto, diff, num = 0., 0., 0., 0.
+        # proto = model.target_proto
+        # with torch.no_grad():
+        #     for x, y, *_ in base_loader['base']:
+        #         x, y = x[1].cuda(), y.cuda()
+        #         fx = model.feature(x)
+        #         score = model.classifier(fx)
+        #         pred = score.max(dim=-1)[1]
+        #         acc_fc += float((pred == y).sum().item())
+        #         score = - ((fx.unsqueeze(1) - proto.unsqueeze(0)) ** 2).sum(dim=-1)
+        #         pred2 = score.max(dim=-1)[1]
+        #         acc_proto += float((pred2 == y).sum().item())
+        #         diff += float((pred2 == pred).sum().item())
+        #         num += x.shape[0]
+        # acc_fc /= num
+        # acc_proto /= num
+        # diff /= num
+        # source_acc_fc.append(acc_fc)
+        # source_acc_proto.append(acc_proto)
+        # source_diff.append(diff)
+        # print('source_acc_fc:', [f'{x*100:.2f}' for x in source_acc_fc])
+        # print('source_acc_proto:', [f'{x*100:.2f}' for x in source_acc_proto])
+        # print('source_diff:', [f'{x*100:.2f}' for x in source_diff])
+        # print(f'target_acc_fc: {target_acc_fc}')
+        # print(f'target_acc_proto: {target_acc_proto}')
+        # print(f'target_diff: {target_diff}')
     # exit()
 
     #     distribution = 0.
