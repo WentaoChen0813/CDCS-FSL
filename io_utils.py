@@ -84,6 +84,7 @@ def parse_args(script):
         parser.add_argument('--warmup'      , action='store_true', help='continue from baseline, neglected if resume is true') #never used in the paper
         # test
         parser.add_argument('--test', action='store_true')
+        parser.add_argument('--test_freq', default=1, type=int)
         parser.add_argument('--reverse_sq', action='store_true')
         parser.add_argument('--n_episode', default=600, type=int)
         parser.add_argument('--split', default='novel',            help='base/val/novel')  # default novel, but you can also test base/val class accuracy if you want

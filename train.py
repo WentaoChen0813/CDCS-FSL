@@ -52,14 +52,15 @@ def train(base_loader, val_loader, model, optimization, start_epoch, stop_epoch,
             for key, value in loss.items():
                 params.logger.scalar_summary(f'train/{key}', value, epoch)
 
-        model.eval()
-        acc = model.test_loop(epoch, val_loader, params)
-        params.logger.scalar_summary('test/acc', acc, epoch)
-        if acc > max_acc : #for baseline and baseline++, we don't use validation in default and we let acc = -1, but we allow options to validate with DB index
-            print("best model! save...")
-            max_acc = acc
-            outfile = os.path.join(params.checkpoint_dir, 'best_model.tar')
-            torch.save({'epoch': epoch, 'state': model.state_dict()}, outfile)
+        if epoch % params.test_freq == 0:
+            model.eval()
+            acc = model.test_loop(epoch, val_loader, params)
+            params.logger.scalar_summary('test/acc', acc, epoch)
+            if acc > max_acc : #for baseline and baseline++, we don't use validation in default and we let acc = -1, but we allow options to validate with DB index
+                print("best model! save...")
+                max_acc = acc
+                outfile = os.path.join(params.checkpoint_dir, 'best_model.tar')
+                torch.save({'epoch': epoch, 'state': model.state_dict()}, outfile)
 
         if (epoch % params.save_freq == 0) or (epoch == stop_epoch - 1):
             outfile = os.path.join(params.checkpoint_dir, '{:d}.tar'.format(epoch))
@@ -125,26 +126,20 @@ if __name__ == '__main__':
         torch.manual_seed(params.seed)
         torch.backends.cudnn.deterministic = True
 
-    if params.dataset == 'DomainNet':
-        base_folder = '../dataset/DomainNet/real/base/'
+    if params.dataset in ['DomainNet', 'Office-Home']:
+        base_folder = os.path.join('../dataset', params.dataset, 'real/base')
 
         if params.supervised_align:
             base_folder = [base_folder,
-                           f'../dataset/DomainNet/{params.cross_domain}/base/']
-        val_folder = os.path.join('../dataset/DomainNet/real/',
-                                   params.split)
+                           os.path.join('../dataset', params.dataset, params.cross_domain, 'base')]
+        val_folder = os.path.join('../dataset', params.dataset, 'real', params.split)
         if params.cross_domain:
-            val_folder = [os.path.join(f'../dataset/DomainNet/{params.cross_domain}/',
-                                       params.split),
-                          # os.path.join(f'../dataset/DomainNet/{params.cross_domain}/',
-                          #              params.split),
-                          val_folder,
-                          # val_folder
-                          ]
+            val_folder = [os.path.join('../dataset', params.dataset, params.cross_domain, params.split),
+                          val_folder]
             if params.reverse_sq:
                 val_folder = val_folder[::-1]
-            unlabeled_folder = [f'../dataset/DomainNet/{params.cross_domain}/base',
-                                f'../dataset/DomainNet/{params.cross_domain}/val',]
+            unlabeled_folder = [os.path.join('../dataset', params.dataset, params.cross_domain ,'base'),
+                                os.path.join('../dataset', params.dataset, params.cross_domain ,'val')]
                                 # f'../dataset/DomainNet/{params.cross_domain}/novel']
     else:
         raise ValueError('unknown dataset')
@@ -196,7 +191,7 @@ if __name__ == '__main__':
         if params.method == 'baseline':
             model = BaselineTrain(params, model_dict[params.model], params.num_classes)
         elif params.method == 'baseline++':
-            model = BaselineTrain(params, model_dict[params.model], params.num_classes, loss_type=params.loss_type)
+            model = BaselineTrain(params, model_dict[params.model], params.num_classes, loss_type='dist')
     elif params.method in ['protonet', 'matchingnet', 'relationnet', 'relationnet_softmax', 'maml', 'maml_approx']:
         n_query = max(1, int(15 * params.test_n_way / params.train_n_way))  # if test_n_way is smaller than train_n_way, reduce n_query to keep batch size small
 
