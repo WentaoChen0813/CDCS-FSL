@@ -73,7 +73,7 @@ if __name__ == '__main__':
     params = parse_args('train')
     # DEBUG
     # params.exp = 'debug'
-    # params.gpu = '4'
+    # params.gpu = '6'
     # params.cross_domain = 'clipart'
     # params.method = 'baseline'
     # params.loss_type = 'euclidean'
@@ -111,7 +111,8 @@ if __name__ == '__main__':
     # params.ada_proto = False
     # params.batch_size = 128
     # params.resume = True
-    # params.checkpoint = 'checkpoints/DomainNet/clipart/ResNet18_baseline/pseudo_align_th0.5_m0.99_val'
+    # params.checkpoint = 'checkpoints/DomainNet/clipart/ResNet18_baseline/fixmatch_th0.5_norm-1_prior_l0.2_proto_align_a7_norm-1_crop_val'
+    # params.checkpoint = 'checkpoints/DomainNet/clipart/ResNet18_baseline/naive_proto_align_a7_m0.7'
     # params.checkpoint = 'checkpoints/DomainNet/painting/ResNet18_baseline/0'
     # params.save_iter = 20
     # params.test = True
@@ -128,6 +129,8 @@ if __name__ == '__main__':
 
     if params.dataset in ['DomainNet', 'Office-Home']:
         base_folder = os.path.join('../dataset', params.dataset, 'real/base')
+        # debug
+        # base_folder = os.path.join('../dataset', params.dataset, 'real/novel')
 
         if params.supervised_align:
             base_folder = [base_folder,
@@ -141,6 +144,8 @@ if __name__ == '__main__':
             unlabeled_folder = [os.path.join('../dataset', params.dataset, params.cross_domain ,'base'),
                                 os.path.join('../dataset', params.dataset, params.cross_domain ,'val')]
                                 # f'../dataset/DomainNet/{params.cross_domain}/novel']
+            # debug
+            # unlabeled_folder = [os.path.join('../dataset', params.dataset, params.cross_domain ,'novel')]
     else:
         raise ValueError('unknown dataset')
 
@@ -423,6 +428,139 @@ if __name__ == '__main__':
     #             for j, (avg, cur) in enumerate(zip(var, var_i)):
     #                 var[j] = (avg * i + cur) / (i+1)
     # torch.save([mean, var], 'startup_u_mean_var.pt')
+    # exit()
+
+
+    # import tqdm
+    # dists = []
+    # in_dists = []
+    # target_in_dists = []
+    # inter_dists = []
+    # target_inter_dists = []
+    # ratios = []
+    # target_ratios = []
+    # model.num_class = 65
+    # for save_iter in range(0, 100, 10):
+    #     checkpoint_dir = params.checkpoint
+    #     resume_file = get_resume_file(checkpoint_dir, save_iter)
+    #     tmp = torch.load(resume_file)
+    #     model.load_state_dict(tmp['state'], strict=False)
+    #     model.eval()
+    #
+    #     proto = [0] * model.num_class
+    #     sample_num = [0] * model.num_class
+    #     with torch.no_grad():
+    #         for x, y in tqdm.tqdm(base_loader['base']):
+    #             xw, xs, y = x[0].cuda(), x[1].cuda(), y.cuda()
+    #             fx = model.feature(xw)
+    #             for i in range(fx.shape[0]):
+    #                 proto[y[i]] += fx[i]
+    #                 sample_num[y[i]] += 1
+    #     for i in range(model.num_class):
+    #         proto[i] /= sample_num[i]
+    #     proto = torch.stack(proto)
+    #
+    #     # in_dist = [0] * model.num_class
+    #     # sample_num = [0] * model.num_class
+    #     # with torch.no_grad():
+    #     #     for x, y in tqdm.tqdm(base_loader['base']):
+    #     #         xw, xs, y = x[0].cuda(), x[1].cuda(), y.cuda()
+    #     #         fx = model.feature(xw)
+    #     #         for i in range(fx.shape[0]):
+    #     #             in_dist[y[i]] += ((fx[i] - proto[y[i]]) ** 2).sum().sqrt().item()
+    #     #             sample_num[y[i]] += 1
+    #     # for i in range(model.num_class):
+    #     #     in_dist[i] /= sample_num[i]
+    #     # in_dist = sum(in_dist) / model.num_class
+    #     # in_dists.append(f'{in_dist:.3f}')
+    #     #
+    #     # inter_dist = ((proto.unsqueeze(0) - proto.unsqueeze(1)) ** 2).sum(-1).sqrt()
+    #     # inter_dist *= (1 - torch.eye(model.num_class).cuda())
+    #     # inter_dist = inter_dist.sum() / (model.num_class * (model.num_class - 1))
+    #     # inter_dists.append(f'{inter_dist:.3f}')
+    #
+    #     ratio = 0
+    #     num = 0
+    #     with torch.no_grad():
+    #         for x, y in tqdm.tqdm(base_loader['base']):
+    #             xw, xs, y = x[0].cuda(), x[1].cuda(), y.cuda()
+    #             fx = model.feature(xw)
+    #             d = ((fx.unsqueeze(1) - proto.unsqueeze(0)) ** 2).sum(-1).sqrt()
+    #             for i in range(d.shape[0]):
+    #                 i_d = d[i, y[i]].item()
+    #                 # o_d = (d[i].sum() - i_d) / (model.num_class - 1)
+    #                 d[i, y[i]] = 1e6
+    #                 o_d = d[i].min().item()
+    #                 ratio += i_d / o_d
+    #                 num += 1
+    #     ratio /= num
+    #     ratios.append(f'{ratio:.3f}')
+    #
+    #     target_proto = [0] * model.num_class
+    #     sample_num = [0] * model.num_class
+    #     with torch.no_grad():
+    #         for x, y, *_ in tqdm.tqdm(base_loader['fixmatch']):
+    #             xw, xs, y = x[0].cuda(), x[1].cuda(), y.cuda()
+    #             fx = model.feature(xw)
+    #             for i in range(fx.shape[0]):
+    #                 if y[i] < model.num_class:
+    #                     target_proto[y[i]] += fx[i]
+    #                     sample_num[y[i]] += 1
+    #     target_mean = sum(target_proto) / sum(sample_num)
+    #     for i in range(model.num_class):
+    #         if sample_num[i] == 0:
+    #             target_proto[i] = target_mean
+    #         else:
+    #             target_proto[i] /= sample_num[i]
+    #     target_proto = torch.stack(target_proto)
+    #     # target_proto = model.target_proto
+    #
+    #     # target_in_dist = [0] * model.num_class
+    #     # sample_num = [0] * model.num_class
+    #     # with torch.no_grad():
+    #     #     for x, y, *_ in tqdm.tqdm(base_loader['fixmatch']):
+    #     #         xw, xs, y = x[0].cuda(), x[1].cuda(), y.cuda()
+    #     #         fx = model.feature(xw)
+    #     #         for i in range(fx.shape[0]):
+    #     #             target_in_dist[y[i]] += ((fx[i] - target_proto[y[i]]) ** 2).sum().sqrt().item()
+    #     #             sample_num[y[i]] += 1
+    #     # for i in range(model.num_class):
+    #     #     target_in_dist[i] /= sample_num[i]
+    #     # target_in_dist = sum(target_in_dist) / model.num_class
+    #     # target_in_dists.append(f'{target_in_dist:.3f}')
+    #     #
+    #     # target_inter_dist = ((target_proto.unsqueeze(0) - target_proto.unsqueeze(1)) ** 2).sum(-1).sqrt()
+    #     # target_inter_dist *= (1 - torch.eye(model.num_class).cuda())
+    #     # target_inter_dist = target_inter_dist.sum() / (model.num_class * (model.num_class - 1))
+    #     # target_inter_dists.append(f'{target_inter_dist:.3f}')
+    #
+    #     ratio = 0
+    #     num = 0
+    #     with torch.no_grad():
+    #         for x, y, *_ in tqdm.tqdm(base_loader['fixmatch']):
+    #             xw, xs, y = x[0].cuda(), x[1].cuda(), y.cuda()
+    #             fx = model.feature(xw)
+    #             d = ((fx.unsqueeze(1) - target_proto.unsqueeze(0)) ** 2).sum(-1).sqrt()
+    #             for i in range(d.shape[0]):
+    #                 i_d = d[i, y[i]].item()
+    #                 # o_d = (d[i].sum() - i_d) / (model.num_class - 1)
+    #                 d[i, y[i]] = 1e6
+    #                 o_d = d[i].min().item()
+    #                 ratio += i_d / o_d
+    #                 num += 1
+    #     ratio /= num
+    #     target_ratios.append(f'{ratio:.3f}')
+    #
+    #     dist = ((proto - target_proto) ** 2).sum(-1).sqrt().mean(0).item()
+    #
+    #     dists.append(f'{dist:.3f}')
+    #     print(dists)
+    #     # print(in_dists)
+    #     # print(target_in_dists)
+    #     # print(inter_dists)
+    #     # print(target_inter_dists)
+    #     print(ratios)
+    #     print(target_ratios)
     # exit()
 
 

@@ -65,6 +65,13 @@ class BaselineTrain(nn.Module):
                 self.proto_align_norm = nn.Parameter(torch.tensor(4.))
         if params.fixmatch_norm == -1:
             self.fixmatch_norm = nn.Parameter(torch.tensor(10.))
+        if params.naive_proto_align:
+            self.register_buffer('source_proto', torch.zeros(self.num_class, self.feature.final_feat_dim))
+            self.register_buffer('target_proto', torch.zeros(self.num_class, self.feature.final_feat_dim))
+            self.iter_num = 0
+            self.max_iter = 50000
+            self.alpha = params.proto_align_a
+            self.proto_align_lw = 0.
 
     def init_teacher(self):
         for param_t, param_s in zip(self.teacher_feature.state_dict().values(), self.feature.state_dict().values()):
@@ -373,6 +380,40 @@ class BaselineTrain(nn.Module):
         self.iter_num += 1
         self.proto_align_lw = 2 / (1 + np.exp(-self.alpha * self.iter_num / self.max_iter)) - 1
 
+    def update_source_target_proto(self, fx, y, fux, uy):
+        source_protos = [0 for i in range(self.num_class)]
+        source_sample_num = [0 for i in range(self.num_class)]
+        for i, cls in enumerate(y.cpu().numpy()):
+            source_protos[cls] += fx[i]
+            source_sample_num[cls] += 1
+        for i in range(self.num_class):
+            if source_sample_num[i] > 0:
+                source_protos[i] /= source_sample_num[i]
+            source_protos[i] = self.params.proto_align_m * self.source_proto[i] + \
+                               (1 - self.params.proto_align_m) * source_protos[i]
+            with torch.no_grad():
+                self.source_proto[i] = source_protos[i]
+
+        target_protos = [0 for i in range(self.num_class)]
+        target_sample_num = [0 for i in range(self.num_class)]
+        for i, cls in enumerate(uy.cpu().numpy()):
+            target_protos[cls] += fux[i]
+            target_sample_num[cls] += 1
+        for i in range(self.num_class):
+            if target_sample_num[i] > 0:
+                target_protos[i] /= target_sample_num[i]
+            target_protos[i] = self.params.proto_align_m * self.target_proto[i] + \
+                               (1 - self.params.proto_align_m) * target_protos[i]
+            with torch.no_grad():
+                self.target_proto[i] = target_protos[i]
+
+        self.iter_num += 1
+        self.proto_align_lw = 2 / (1 + np.exp(-self.alpha * self.iter_num / self.max_iter)) - 1
+
+        source_protos = torch.stack(source_protos)
+        target_protos = torch.stack(target_protos)
+        return source_protos, target_protos
+
     def train_loop(self, epoch, base_loader, optimizer, params=None):
         print_freq = 10
         avg_loss = 0
@@ -653,6 +694,28 @@ class BaselineTrain(nn.Module):
                 avg_pseudo_loss += pseudo_loss.item()
                 loss += params.bn_align_lw * pseudo_loss
 
+            elif params.naive_proto_align:
+                try:
+                    ux, uy, *_ = next(unlabeled_iter)
+                except:
+                    unlabeled_iter = iter(base_loader['unlabeled'])
+                    ux, uy, *_ = next(unlabeled_iter)
+
+                x_ux = torch.cat([x, ux]).cuda()
+                fx_fux = self.feature(x_ux)
+                fx, fux = fx_fux[:x.shape[0]], fx_fux[x.shape[0]:]
+
+                logit_x = self.classifier(fx)
+                y = y.cuda()
+                loss = self.loss_fn(logit_x, y)
+                avg_loss = avg_loss + loss.item()
+
+                pseudo_label = self.classifier(fux).max(-1)[-1]
+                source_proto, target_proto = self.update_source_target_proto(fx, y, fux, pseudo_label)
+                proto_loss = ((source_proto - target_proto)**2).sum(-1).sqrt().mean(0)
+                avg_proto_loss += proto_loss
+                loss += self.proto_align_lw * proto_loss
+
             elif params.classcontrast:
                 try:
                     ux, uy, *_ = next(classcontrast_iter)
@@ -736,7 +799,7 @@ class BaselineTrain(nn.Module):
                     print_line += ' | Classcontrast_loss {:f}'.format(avg_classcontrast_loss / (i + 1))
                 if self.params.ad_align:
                     print_line += ' | Ad_loss {:f}'.format(avg_ad_loss / (i + 1))
-                if self.params.proto_align:
+                if self.params.proto_align or self.params.naive_proto_align:
                     print_line += ' | Proto_loss {:f}'.format(avg_proto_loss / (i + 1))
                 print(print_line)
 
@@ -756,7 +819,7 @@ class BaselineTrain(nn.Module):
             loss_dict['classcontrast_loss'] = avg_classcontrast_loss / (i + 1)
         if self.params.ad_align:
             loss_dict['ad_loss'] = avg_ad_loss / (i + 1)
-        if self.params.proto_align:
+        if self.params.proto_align or self.params.naive_proto_align:
             loss_dict['proto_loss'] = avg_proto_loss / (i + 1)
         return loss_dict
 

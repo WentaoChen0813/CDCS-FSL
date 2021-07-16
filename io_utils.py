@@ -57,6 +57,7 @@ def parse_args(script):
         parser.add_argument('--fixmatch_augtype', default='fixmatch', choices=['fixmatch', 'fixmatch+crop', 'geometry', 'geometry+crop'])
         parser.add_argument('--fixmatch_norm', default=0, type=float)
         parser.add_argument('--proto_align' , action='store_true')
+        parser.add_argument('--naive_proto_align', action='store_true')
         parser.add_argument('--proto_align_m', default=0.99, type=float)
         parser.add_argument('--proto_align_a', default=10, type=float)
         parser.add_argument('--proto_align_norm', default=0, type=float)
