@@ -1,3 +1,5 @@
+import pickle
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -73,7 +75,7 @@ if __name__ == '__main__':
     params = parse_args('train')
     # DEBUG
     # params.exp = 'debug'
-    # params.gpu = '6'
+    # params.gpu = '0'
     # params.cross_domain = 'clipart'
     # params.method = 'baseline'
     # params.loss_type = 'euclidean'
@@ -145,7 +147,7 @@ if __name__ == '__main__':
                                 os.path.join('../dataset', params.dataset, params.cross_domain ,'val')]
                                 # f'../dataset/DomainNet/{params.cross_domain}/novel']
             # debug
-            # unlabeled_folder = [os.path.join('../dataset', params.dataset, params.cross_domain ,'novel')]
+            # unlabeled_folder = [os.path.join('../dataset', params.dataset, params.cross_domain ,'base')]
     else:
         raise ValueError('unknown dataset')
 
@@ -155,7 +157,8 @@ if __name__ == '__main__':
     if params.method in ['baseline', 'baseline++']:
         base_datamgr = SimpleDataManager(image_size, batch_size=params.batch_size)
         base_loader = base_datamgr.get_data_loader(data_folder=base_folder, aug=params.train_aug, drop_last=True,
-                                                   fixmatch_trans=params.proto_align, augtype=params.fixmatch_augtype)
+                                                   fixmatch_trans=params.proto_align, augtype=params.fixmatch_augtype,
+                                                   fixmatch_weak=params.fixmatch_weak, fixmatch_anchor=params.fixmatch_anchor)
 
         few_shot_params = dict(n_way=params.test_n_way, n_support=params.n_shot)
         val_datamgr = SetDataManager(image_size, fixmatch_resize=params.proto_align, n_query=15, n_episode=params.n_episode, **few_shot_params)
@@ -173,6 +176,7 @@ if __name__ == '__main__':
                 unlabeled_loader = unlabeled_datamgr.get_data_loader(data_folder=unlabeled_folder,
                                                                      fixmatch_trans=True,
                                                                      augtype=params.fixmatch_augtype,
+                                                                     fixmatch_weak=params.fixmatch_weak,
                                                                      fixmatch_anchor=params.fixmatch_anchor,
                                                                      add_label=True,
                                                                      with_idx=True)
@@ -431,6 +435,7 @@ if __name__ == '__main__':
     # exit()
 
 
+    # visualize domain distance and class distance
     # import tqdm
     # dists = []
     # in_dists = []
@@ -563,6 +568,82 @@ if __name__ == '__main__':
     #     print(target_ratios)
     # exit()
 
+    # t-SNE
+    # import matplotlib.pyplot as plt
+    # from sklearn.manifold import TSNE
+    #
+    # def plot_embedding(source_data, source_label, source_proto, target_data, target_label, target_proto, classes, filename):
+    #     # x_min, x_max = np.min(data, 0), np.max(data, 0)
+    #     # data = (data - x_min) / (x_max - x_min)
+    #
+    #     fig = plt.figure()
+    #     plt.scatter(source_data[:, 0], source_data[:, 1], c=source_label*1.0/source_label.max(), marker='^', cmap='Set2', s=20, alpha=1., linewidths=0.5)
+    #     plt.scatter(target_data[:, 0], target_data[:, 1], c=target_label * 1.0 / target_label.max(), marker='v', cmap='Set2', s=20, alpha=1., linewidths=0.5)
+    #     plt.scatter(source_proto[:, 0], source_proto[:, 1], c=classes * 1.0 / classes.max(), marker='^', cmap='Set2', s=50, alpha=1., linewidths=1, edgecolors='black')
+    #     plt.scatter(target_proto[:, 0], target_proto[:, 1], c=classes * 1.0 / classes.max(), marker='v', cmap='Set2', s=50, alpha=1., linewidths=1, edgecolors='black')
+    #     # plt.axis('off')
+    #     # plt.savefig('scatter_{:03d}.png'.format(itr), bbox_inches='tight')
+    #     # plt.close(f)
+    #     # for i in range(data.shape[0]):
+    #     #     plt.text(data[i, 0], data[i, 1], str(label[i]),
+    #     #              color=plt.cm.Set1(label[i] * 1.0 / label.max()),
+    #     #              fontdict={'weight': 'bold', 'size': 9})
+    #     # plt.xticks([])
+    #     # plt.yticks([])
+    #     plt.savefig(filename, bbox_inches='tight')
+    #     return fig
+    #
+    # source_features = []
+    # source_labels = []
+    # target_features = []
+    # target_labels = []
+    # for save_iter in range(0, 10, 10):
+    #     checkpoint_dir = params.checkpoint
+    #     resume_file = get_resume_file(checkpoint_dir, save_iter)
+    #     tmp = torch.load(resume_file)
+    #     model.load_state_dict(tmp['state'], strict=False)
+    #     model.eval()
+    #     with torch.no_grad():
+    #         for x, y, *_ in base_loader['base']:
+    #             x = x[0].cuda()
+    #             fx = model.feature(x)
+    #             fx = torch.nn.functional.normalize(fx, dim=-1)
+    #             source_features.append(fx.cpu())
+    #             source_labels.append(y)
+    #     source_features = torch.cat(source_features, 0).numpy()
+    #     source_labels = torch.cat(source_labels, 0).numpy()
+    #     with torch.no_grad():
+    #         for x, y, *_ in base_loader['fixmatch']:
+    #             x = x[0].cuda()
+    #             fx = model.feature(x)
+    #             fx = torch.nn.functional.normalize(fx, dim=-1)
+    #             target_features.append(fx.cpu())
+    #             target_labels.append(y)
+    #     target_features = torch.cat(target_features, 0).numpy()
+    #     target_labels = torch.cat(target_labels, 0).numpy()
+    #     print('get all features!')
+    #     pickle.dump((source_features, source_labels, target_features, target_labels), open(f'feature_label_epoch{save_iter}.pkl', 'wb'))
+    #     # source_features, source_labels, target_features, target_labels = pickle.load(open(f'feature_label_epoch{save_iter}}.pkl', 'rb'))
+    #     idx = source_labels < 7
+    #     source_features, source_labels = source_features[idx], source_labels[idx]
+    #     idx = target_labels < 7
+    #     target_features, target_labels = target_features[idx], target_labels[idx]
+    #     features = np.concatenate([source_features, target_features], axis=0)
+    #     labels = np.concatenate([source_labels, target_labels], axis=0)
+    #     classes = np.unique(labels)
+    #     tsne = TSNE(n_components=2, init='pca', random_state=0)
+    #     result = tsne.fit_transform(features)
+    #     # pickle.dump((result, labels), open('tsne_result.pkl', 'wb'))
+    #     # result, labels = pickle.load(open('tsne_result.pkl', 'rb'))
+    #     num_source = source_features.shape[0]
+    #     source_result, target_result = result[:num_source], result[num_source:]
+    #     source_proto, target_proto = [], []
+    #     for c in classes:
+    #         source_proto.append(source_result[source_labels==c].mean(0))
+    #         target_proto.append(target_result[target_labels==c].mean(0))
+    #     source_proto, target_proto = np.stack(source_proto), np.stack(target_proto)
+    #     fig = plot_embedding(source_result, source_labels, source_proto, target_result, target_labels, target_proto, classes, filename=f'epoch-{save_iter}.png')
+    # exit()
 
     if params.resume:
         if params.checkpoint:

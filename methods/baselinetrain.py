@@ -522,7 +522,7 @@ class BaselineTrain(nn.Module):
                     dist *= params.proto_align_norm
                 proto_loss = self.loss_fn(-dist, y)
                 avg_proto_loss += proto_loss
-                loss += self.proto_align_lw * proto_loss
+                loss += self.params.proto_align_lw * self.proto_align_lw * proto_loss
                 self.update_target_proto(fuxw, pseudo_label0)
 
             elif params.fixmatch and params.ad_align:

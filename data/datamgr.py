@@ -118,7 +118,7 @@ class SimCLRTransform:
 
 
 class FixMatchTransform:
-    def __init__(self, size=224, n_anchor=1, has_weak=True, augtype='fixmatch'):
+    def __init__(self, size=224, n_weak=1, n_anchor=1, augtype='fixmatch'):
         self.weak = transforms.Compose([
             transforms.RandomHorizontalFlip(),
             # Attention: resize smaller edge to target size
@@ -134,11 +134,11 @@ class FixMatchTransform:
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
         self.n_anchor = n_anchor
-        self.has_weak = has_weak
+        self.n_weak = n_weak
 
     def __call__(self, x):
         out = []
-        if self.has_weak:
+        for i in range(self.n_weak):
             weak = self.normalize(self.weak(x))
             out.append(weak)
         for i in range(self.n_anchor):
@@ -196,11 +196,11 @@ class SimpleDataManager(DataManager):
 
     def get_data_loader(self, data_folder=None, add_label=False, aug=None, with_idx=False,
                         rot=False, simclr_trans=False, fixmatch_trans=False, fixmatch_anchor=1,
-                        fixmatch_weak=True, augtype='fixmatch', drop_last=False):  # parameters that would change on train/val set
+                        fixmatch_weak=1, augtype='fixmatch', drop_last=False):  # parameters that would change on train/val set
         if simclr_trans:
             transform = SimCLRTransform(self.image_size)
         elif fixmatch_trans:
-            transform = FixMatchTransform(self.image_size, fixmatch_anchor, fixmatch_weak, augtype)
+            transform = FixMatchTransform(self.image_size, fixmatch_weak, fixmatch_anchor, augtype)
         else:
             transform = self.trans_loader.get_composed_transform(aug)
         if not isinstance(data_folder, list):
