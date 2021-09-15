@@ -21,7 +21,7 @@ def parse_args(script):
     parser.add_argument('--dataset'     , default='DomainNet',        help='DomainNet/CUB/miniImagenet/cross/omniglot/cross_char')
     parser.add_argument('--cross_domain', default='painting')
     parser.add_argument('--model'       , default='ResNet18',      help='model: Conv{4|6} / ResNet{10|18|34|50|101}') # 50 and 101 are not used in the paper
-    parser.add_argument('--method'      , default='baseline',   help='baseline/baseline++/protonet/matchingnet/relationnet{_softmax}/maml{_approx}') #relationnet_softmax replace L2 norm with softmax to expedite training, maml_approx use first-order approximation in the gradient for efficiency
+    parser.add_argument('--method'      , default='baseline',   help='baseline/baseline++/protonet/deepemd/matchingnet/relationnet{_softmax}/maml{_approx}') #relationnet_softmax replace L2 norm with softmax to expedite training, maml_approx use first-order approximation in the gradient for efficiency
     parser.add_argument('--train_n_way' , default=5, type=int,  help='class num to classify for training') #baseline and baseline++ would ignore this parameter
     parser.add_argument('--test_n_way'  , default=5, type=int,  help='class num to classify for testing (validation) ') #baseline and baseline++ only use this parameter in finetuning
     parser.add_argument('--n_shot'      , default=5, type=int,  help='number of labeled data in each class, same as n_support') #baseline and baseline++ only use this parameter in finetuning
@@ -55,7 +55,7 @@ def parse_args(script):
         parser.add_argument('--fixmatch_teacher', action='store_true')
         parser.add_argument('--fixmatch_prior', action='store_true')
         parser.add_argument('--fixmatch_lambda', default=0., type=float)
-        parser.add_argument('--fixmatch_augtype', default='fixmatch', choices=['fixmatch', 'fixmatch+crop', 'geometry', 'geometry+crop'])
+        parser.add_argument('--fixmatch_augtype', default='fixmatch+crop', choices=['fixmatch', 'fixmatch+crop', 'geometry', 'geometry+crop'])
         parser.add_argument('--fixmatch_norm', default=0, type=float)
         parser.add_argument('--proto_align' , action='store_true')
         parser.add_argument('--proto_align_lw', default=1, type=float)
@@ -63,6 +63,7 @@ def parse_args(script):
         parser.add_argument('--proto_align_m', default=0.99, type=float)
         parser.add_argument('--proto_align_a', default=10, type=float)
         parser.add_argument('--proto_align_norm', default=0, type=float)
+        parser.add_argument('--proto_denoise', default=0, type=float)
         parser.add_argument('--ad_align'    , action='store_true')
         parser.add_argument('--ad_align_type', default='cdan', choices=['cdan', 'dann', 'cada'])
         parser.add_argument('--ad_align_lw' , default=1, type=float)
@@ -78,7 +79,7 @@ def parse_args(script):
         parser.add_argument('--pseudomix_alpha', default=0.7, type=float)
         parser.add_argument('--pseudomix_fn', default='mixup', choices=['mixup', 'cutmix'])
         parser.add_argument('--pseudomix_bi', action='store_true')
-        parser.add_argument('--momentum'    , default=0.6, type=float)
+        parser.add_argument('--momentum'    , default=1, type=float)
         parser.add_argument('--threshold'   , default=0.5, type=float)
         parser.add_argument('--num_classes' , default=228, type=int, help='total number of classes in softmax, only used in baseline') #make it larger than the maximum label value in base class
         parser.add_argument('--save_freq'   , default=10, type=int, help='Save frequency')

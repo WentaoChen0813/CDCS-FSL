@@ -10,12 +10,12 @@ import utils
 from abc import abstractmethod
 
 class MetaTemplate(nn.Module):
-    def __init__(self, model_func, n_way, n_support, change_way = True):
+    def __init__(self, model_func, n_way, n_support, change_way = True, model_args=None):
         super(MetaTemplate, self).__init__()
         self.n_way      = n_way
         self.n_support  = n_support
         self.n_query    = -1 #(change depends on input) 
-        self.feature    = model_func()
+        self.feature    = model_func() if model_args is None else model_func(**model_args)
         self.feat_dim   = self.feature.final_feat_dim
         self.change_way = change_way  #some methods allow different_way classification during training and test
 

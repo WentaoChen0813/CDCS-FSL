@@ -478,12 +478,17 @@ class BaselineTrain(nn.Module):
                         pred = pred / pred.sum(dim=-1, keepdim=True)
                     if params.fixmatch_prior:
                         pred = params.fixmatch_lambda * uy + (1-params.fixmatch_lambda)*pred
+                    if params.proto_denoise > 0:
+                        dist = ((F.normalize(fuxw).unsqueeze(1) - F.normalize(self.target_proto).unsqueeze(0)) ** 2).sum(-1)
+                        dist *= self.proto_align_norm
+                        pred2 = F.softmax(-dist, dim=-1)
+                        pred = params.proto_denoise * pred2 + (1-params.proto_denoise) * pred
                     pseudo_label = pred.max(dim=-1)[1].detach()
                     confidence = pred.max(dim=-1)[0].detach()
                     mask = confidence.ge(self.params.threshold)
-                    if self.params.fixmatch_anchor > 1:
-                        pseudo_label = pseudo_label.repeat(self.params.fixmatch_anchor)
-                        mask = mask.repeat(self.params.fixmatch_anchor)
+                    # if self.params.fixmatch_anchor > 1:
+                    #     pseudo_label = pseudo_label.repeat(self.params.fixmatch_anchor)
+                    #     mask = mask.repeat(self.params.fixmatch_anchor)
 
                 pseudo_label0 = pseudo_label
                 ux, pseudo_label = ux[1][mask], pseudo_label[mask]

@@ -19,6 +19,7 @@ from data.datamgr import SimpleDataManager, SetDataManager
 from methods.baselinetrain import BaselineTrain
 from methods.baselinefinetune import BaselineFinetune
 from methods.protonet import ProtoNet
+from methods.deep_emd import DeepEMD
 from methods.matchingnet import MatchingNet
 from methods.relationnet import RelationNet
 from methods.maml import MAML
@@ -36,7 +37,8 @@ def train(base_loader, val_loader, model, optimization, start_epoch, stop_epoch,
         scheduler = None
     elif optimization == 'sgd':
         optimizer = torch.optim.SGD(model.parameters(), lr=params.lr, momentum=0.9, weight_decay=5e-4, nesterov=True)
-        scheduler = lr_scheduler.CosineAnnealingLR(optimizer, params.stop_epoch, eta_min=1e-6)
+        # scheduler = lr_scheduler.CosineAnnealingLR(optimizer, params.stop_epoch, eta_min=1e-6)
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
     else:
         raise ValueError('Unknown optimization, please define by yourself')
 
@@ -75,7 +77,7 @@ if __name__ == '__main__':
     params = parse_args('train')
     # DEBUG
     # params.exp = 'debug'
-    # params.gpu = '0'
+    # params.gpu = '7'
     # params.cross_domain = 'clipart'
     # params.method = 'baseline'
     # params.loss_type = 'euclidean'
@@ -115,7 +117,7 @@ if __name__ == '__main__':
     # params.resume = True
     # params.checkpoint = 'checkpoints/DomainNet/clipart/ResNet18_baseline/fixmatch_th0.5_norm-1_prior_l0.2_proto_align_a7_norm-1_crop_val'
     # params.checkpoint = 'checkpoints/DomainNet/clipart/ResNet18_baseline/naive_proto_align_a7_m0.7'
-    # params.checkpoint = 'checkpoints/DomainNet/painting/ResNet18_baseline/0'
+    # params.checkpoint = 'checkpoints/DomainNet/clipart/ResNet18_baseline/tsne'
     # params.save_iter = 20
     # params.test = True
     # params.cross_domain = 'real'
@@ -201,7 +203,7 @@ if __name__ == '__main__':
             model = BaselineTrain(params, model_dict[params.model], params.num_classes)
         elif params.method == 'baseline++':
             model = BaselineTrain(params, model_dict[params.model], params.num_classes, loss_type='dist')
-    elif params.method in ['protonet', 'matchingnet', 'relationnet', 'relationnet_softmax', 'maml', 'maml_approx']:
+    elif params.method in ['protonet', 'deepemd', 'matchingnet', 'relationnet', 'relationnet_softmax', 'maml', 'maml_approx']:
         n_query = max(1, int(15 * params.test_n_way / params.train_n_way))  # if test_n_way is smaller than train_n_way, reduce n_query to keep batch size small
 
         train_few_shot_params = dict(n_way=params.train_n_way, n_support=params.n_shot)
@@ -217,6 +219,8 @@ if __name__ == '__main__':
 
         if params.method == 'protonet':
             model = ProtoNet(model_dict[params.model], **train_few_shot_params)
+        elif params.method == 'deepemd':
+            model = DeepEMD(model_dict[params.model], **train_few_shot_params)
         elif params.method == 'matchingnet':
             model = MatchingNet(model_dict[params.model], **train_few_shot_params)
         elif params.method in ['relationnet', 'relationnet_softmax']:
@@ -571,16 +575,47 @@ if __name__ == '__main__':
     # t-SNE
     # import matplotlib.pyplot as plt
     # from sklearn.manifold import TSNE
+    # torch.multiprocessing.set_sharing_strategy('file_system')
     #
     # def plot_embedding(source_data, source_label, source_proto, target_data, target_label, target_proto, classes, filename):
     #     # x_min, x_max = np.min(data, 0), np.max(data, 0)
     #     # data = (data - x_min) / (x_max - x_min)
+    #     source_colors = np.array([
+    #         [241, 72, 5],
+    #         [146, 146, 146],
+    #         [56, 140, 114],
+    #         [70, 97, 156],
+    #         [195, 135, 47],
+    #         [234, 189, 0],
+    #         [117, 166, 38]
+    #     ]) / 255.0
+    #     source_colors = [c for c in source_colors]
+    #     source_data_colors = [source_colors[y] for y in source_label]
+    #     target_colors = np.array([
+    #         [252, 152, 112],
+    #         [194, 194, 194],
+    #         [159, 217, 199],
+    #         [155, 172, 209],
+    #         [228, 196, 148],
+    #         [255, 229, 117],
+    #         [183, 223, 119]
+    #     ]) / 255.0
+    #     target_colors = [c for c in target_colors]
+    #     target_data_colors = [target_colors[y] for y in target_label]
     #
     #     fig = plt.figure()
-    #     plt.scatter(source_data[:, 0], source_data[:, 1], c=source_label*1.0/source_label.max(), marker='^', cmap='Set2', s=20, alpha=1., linewidths=0.5)
-    #     plt.scatter(target_data[:, 0], target_data[:, 1], c=target_label * 1.0 / target_label.max(), marker='v', cmap='Set2', s=20, alpha=1., linewidths=0.5)
-    #     plt.scatter(source_proto[:, 0], source_proto[:, 1], c=classes * 1.0 / classes.max(), marker='^', cmap='Set2', s=50, alpha=1., linewidths=1, edgecolors='black')
-    #     plt.scatter(target_proto[:, 0], target_proto[:, 1], c=classes * 1.0 / classes.max(), marker='v', cmap='Set2', s=50, alpha=1., linewidths=1, edgecolors='black')
+    #     # plt.scatter(source_data[:, 0], source_data[:, 1], c=source_label*1.0/source_label.max(), marker='^', cmap='Set2', s=20, alpha=1., linewidths=0.5)
+    #     # plt.scatter(target_data[:, 0], target_data[:, 1], c=target_label * 1.0 / target_label.max(), marker='v', cmap='Set2', s=20, alpha=1., linewidths=0.5)
+    #     # plt.scatter(source_proto[:, 0], source_proto[:, 1], c=classes * 1.0 / classes.max(), marker='^', cmap='Set2', s=50, alpha=1., linewidths=1, edgecolors='black')
+    #     # plt.scatter(target_proto[:, 0], target_proto[:, 1], c=classes * 1.0 / classes.max(), marker='v', cmap='Set2', s=50, alpha=1., linewidths=1, edgecolors='black')
+    #     plt.scatter(source_data[:, 0], source_data[:, 1], c=source_data_colors, marker='^',
+    #                 s=20, alpha=.7, linewidths=0.5)
+    #     plt.scatter(target_data[:, 0], target_data[:, 1], c=target_data_colors, marker='v',
+    #                 s=20, alpha=.9, linewidths=0.5)
+    #     plt.scatter(source_proto[:, 0], source_proto[:, 1], c=source_colors, marker='^',
+    #                 s=100, alpha=1., linewidths=1, edgecolors='black')
+    #     plt.scatter(target_proto[:, 0], target_proto[:, 1], c=target_colors, marker='v',
+    #                 s=100, alpha=1., linewidths=1, edgecolors='black')
     #     # plt.axis('off')
     #     # plt.savefig('scatter_{:03d}.png'.format(itr), bbox_inches='tight')
     #     # plt.close(f)
@@ -588,42 +623,42 @@ if __name__ == '__main__':
     #     #     plt.text(data[i, 0], data[i, 1], str(label[i]),
     #     #              color=plt.cm.Set1(label[i] * 1.0 / label.max()),
     #     #              fontdict={'weight': 'bold', 'size': 9})
-    #     # plt.xticks([])
-    #     # plt.yticks([])
+    #     plt.xticks([])
+    #     plt.yticks([])
     #     plt.savefig(filename, bbox_inches='tight')
     #     return fig
     #
-    # source_features = []
-    # source_labels = []
-    # target_features = []
-    # target_labels = []
-    # for save_iter in range(0, 10, 10):
-    #     checkpoint_dir = params.checkpoint
-    #     resume_file = get_resume_file(checkpoint_dir, save_iter)
-    #     tmp = torch.load(resume_file)
-    #     model.load_state_dict(tmp['state'], strict=False)
-    #     model.eval()
-    #     with torch.no_grad():
-    #         for x, y, *_ in base_loader['base']:
-    #             x = x[0].cuda()
-    #             fx = model.feature(x)
-    #             fx = torch.nn.functional.normalize(fx, dim=-1)
-    #             source_features.append(fx.cpu())
-    #             source_labels.append(y)
-    #     source_features = torch.cat(source_features, 0).numpy()
-    #     source_labels = torch.cat(source_labels, 0).numpy()
-    #     with torch.no_grad():
-    #         for x, y, *_ in base_loader['fixmatch']:
-    #             x = x[0].cuda()
-    #             fx = model.feature(x)
-    #             fx = torch.nn.functional.normalize(fx, dim=-1)
-    #             target_features.append(fx.cpu())
-    #             target_labels.append(y)
-    #     target_features = torch.cat(target_features, 0).numpy()
-    #     target_labels = torch.cat(target_labels, 0).numpy()
-    #     print('get all features!')
-    #     pickle.dump((source_features, source_labels, target_features, target_labels), open(f'feature_label_epoch{save_iter}.pkl', 'wb'))
-    #     # source_features, source_labels, target_features, target_labels = pickle.load(open(f'feature_label_epoch{save_iter}}.pkl', 'rb'))
+    # for save_iter in [0,1,3,10]:
+    #     # source_features = []
+    #     # source_labels = []
+    #     # target_features = []
+    #     # target_labels = []
+    #     # checkpoint_dir = params.checkpoint
+    #     # resume_file = get_resume_file(checkpoint_dir, save_iter)
+    #     # tmp = torch.load(resume_file)
+    #     # model.load_state_dict(tmp['state'], strict=False)
+    #     # model.eval()
+    #     # with torch.no_grad():
+    #     #     for x, y, *_ in base_loader['base']:
+    #     #         x = x[0].cuda()
+    #     #         fx = model.feature(x)
+    #     #         fx = torch.nn.functional.normalize(fx, dim=-1)
+    #     #         source_features.append(fx.cpu())
+    #     #         source_labels.append(y)
+    #     # source_features = torch.cat(source_features, 0).numpy()
+    #     # source_labels = torch.cat(source_labels, 0).numpy()
+    #     # with torch.no_grad():
+    #     #     for x, y, *_ in base_loader['fixmatch']:
+    #     #         x = x[0].cuda()
+    #     #         fx = model.feature(x)
+    #     #         fx = torch.nn.functional.normalize(fx, dim=-1)
+    #     #         target_features.append(fx.cpu())
+    #     #         target_labels.append(y)
+    #     # target_features = torch.cat(target_features, 0).numpy()
+    #     # target_labels = torch.cat(target_labels, 0).numpy()
+    #     # print('get all features!')
+    #     # pickle.dump((source_features, source_labels, target_features, target_labels), open(f'feature_label_epoch{save_iter}.pkl', 'wb'))
+    #     source_features, source_labels, target_features, target_labels = pickle.load(open(f'feature_label_epoch{save_iter}.pkl', 'rb'))
     #     idx = source_labels < 7
     #     source_features, source_labels = source_features[idx], source_labels[idx]
     #     idx = target_labels < 7
