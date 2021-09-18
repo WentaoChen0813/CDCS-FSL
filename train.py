@@ -20,6 +20,7 @@ from methods.baselinetrain import BaselineTrain
 from methods.baselinefinetune import BaselineFinetune
 from methods.protonet import ProtoNet
 from methods.deep_emd import DeepEMD
+from methods.meta_optnet import MetaOptNet
 from methods.matchingnet import MatchingNet
 from methods.relationnet import RelationNet
 from methods.maml import MAML
@@ -78,8 +79,9 @@ if __name__ == '__main__':
     # DEBUG
     # params.exp = 'debug'
     # params.gpu = '7'
-    # params.cross_domain = 'clipart'
-    # params.method = 'baseline'
+    # params.cross_domain = 'painting'
+    # params.method = 'metaoptnet'
+    # params.train_n_shot = 10
     # params.loss_type = 'euclidean'
     # params.pseudo_align = True
     # params.soft_label = True
@@ -203,10 +205,12 @@ if __name__ == '__main__':
             model = BaselineTrain(params, model_dict[params.model], params.num_classes)
         elif params.method == 'baseline++':
             model = BaselineTrain(params, model_dict[params.model], params.num_classes, loss_type='dist')
-    elif params.method in ['protonet', 'deepemd', 'matchingnet', 'relationnet', 'relationnet_softmax', 'maml', 'maml_approx']:
+    elif params.method in ['protonet', 'deepemd', 'metaoptnet', 'matchingnet', 'relationnet', 'relationnet_softmax', 'maml', 'maml_approx']:
         n_query = max(1, int(15 * params.test_n_way / params.train_n_way))  # if test_n_way is smaller than train_n_way, reduce n_query to keep batch size small
 
-        train_few_shot_params = dict(n_way=params.train_n_way, n_support=params.n_shot)
+        if params.train_n_shot == -1:
+            params.train_n_shot = params.n_shot
+        train_few_shot_params = dict(n_way=params.train_n_way, n_support=params.train_n_shot)
         base_datamgr = SetDataManager(image_size, n_query=n_query, **train_few_shot_params)
         if params.supervised_align:
             base_folder = [base_folder[1], base_folder[0]]
@@ -221,6 +225,8 @@ if __name__ == '__main__':
             model = ProtoNet(model_dict[params.model], **train_few_shot_params)
         elif params.method == 'deepemd':
             model = DeepEMD(model_dict[params.model], **train_few_shot_params)
+        elif params.method == 'metaoptnet':
+            model = MetaOptNet(model_dict[params.model], **test_few_shot_params)
         elif params.method == 'matchingnet':
             model = MatchingNet(model_dict[params.model], **train_few_shot_params)
         elif params.method in ['relationnet', 'relationnet_softmax']:

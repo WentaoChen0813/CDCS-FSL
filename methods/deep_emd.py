@@ -15,7 +15,7 @@ class DeepEMD(MetaTemplate):
         self.temperature = 12.5
         self.H = 7
         self.W = 7
-        self.sfc_lr = 0.1
+        self.sfc_lr = 100 # the default value is 100 for test and 0.1 for training.
         self.sfc_update_step = 100
         self.sfc_bs = 4
 
@@ -34,7 +34,8 @@ class DeepEMD(MetaTemplate):
         if self.n_support == 1:
             z_proto = z_support.squeeze()
         else:
-            z_proto = self.get_sfc(z_support)
+            # z_proto = self.get_sfc(z_support)
+            z_proto = z_support.mean(dim=1).clone().detach()
         z_query     = z_query.contiguous().view(self.n_way* self.n_query, -1, self.H, self.W)
 
         scores = self.emd_forward_1shot(z_proto, z_query)

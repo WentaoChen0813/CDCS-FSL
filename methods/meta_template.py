@@ -18,6 +18,7 @@ class MetaTemplate(nn.Module):
         self.feature    = model_func() if model_args is None else model_func(**model_args)
         self.feat_dim   = self.feature.final_feat_dim
         self.change_way = change_way  #some methods allow different_way classification during training and test
+        self.change_shot = False  #some methods allow different_shot classification during training and test
 
     @abstractmethod
     def set_forward(self,x,is_feature):
@@ -58,6 +59,8 @@ class MetaTemplate(nn.Module):
 
         avg_loss=0
         for i, (x,_ ) in enumerate(train_loader):
+            if self.change_shot:
+                self.n_support = self.train_n_support
             x = x.squeeze()
             self.n_query = x.size(1) - self.n_support           
             if self.change_way:
@@ -80,6 +83,10 @@ class MetaTemplate(nn.Module):
         
         iter_num = len(test_loader) 
         for x,_ in tqdm(test_loader):
+            if self.change_shot:
+                self.n_support = self.test_n_support
+            # print(f'change_shot: {self.change_shot}')
+            # print(f'n_support: {self.n_support}')
             x = x.squeeze()
             self.n_query = x.size(1) - self.n_support
             if self.change_way:
