@@ -126,6 +126,7 @@ class DeepEMD(MetaTemplate):
         num_proto = similarity_map.shape[1]
         num_node=weight_1.shape[-1]
 
+        # We only implement opencv solver for the sake of training speed.
         if solver == 'opencv':  # use openCV solver
             for i in range(num_query):
                 for j in range(num_proto):

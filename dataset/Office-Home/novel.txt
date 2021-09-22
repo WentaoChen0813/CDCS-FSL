@@ -1,0 +1,15 @@
+Backpack
+Batteries
+Candles
+Drill
+Flipflops
+Fork
+Helmet
+Knives
+Oven
+Push_Pin
+Ruler
+Screwdriver
+Sink
+Trash_Can
+Webcam

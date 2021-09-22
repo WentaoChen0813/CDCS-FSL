@@ -1,25 +1,20 @@
 # This code is modified from https://github.com/facebookresearch/low-shot-shrink-hallucinate
 
 import torch
-import torch.nn as nn
 import torchvision
-from PIL import Image
-import numpy as np
-import random
 import torchvision.transforms as transforms
 import data.additional_transforms as add_transforms
-from data.dataset import SimpleDataset, SetDataset, EpisodicBatchSampler, EpisodeDataset
+from data.dataset import EpisodeDataset
 from abc import abstractmethod
 from data.randaugment import RandAugmentMC
-import os
 
 
 class TransformLoader:
-    def __init__(self, image_size, fixmatch_resize=False,
+    def __init__(self, image_size, keep_ratio=False,
                  normalize_param=dict(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
                  jitter_param=dict(Brightness=0.4, Contrast=0.4, Color=0.4)):
         self.image_size = image_size
-        self.fixmatch_resize = fixmatch_resize
+        self.keep_ratio = keep_ratio
         self.normalize_param = normalize_param
         self.jitter_param = jitter_param
 
@@ -33,8 +28,8 @@ class TransformLoader:
         elif transform_type == 'CenterCrop':
             return method(self.image_size)
         elif transform_type == 'Resize':
-            # Attention: Fixmatch resize smaller edge to target size
-            if self.fixmatch_resize:
+            # Attention: StrongAugment resize smaller edge to target size
+            if self.keep_ratio:
                 return method(int(self.image_size * 1.15))
             else:
                 return method([int(self.image_size * 1.15), int(self.image_size * 1.15)])
@@ -54,71 +49,8 @@ class TransformLoader:
         return transform
 
 
-# https://github.com/sthalles/SimCLR
-class GaussianBlur(object):
-    """blur a single image on CPU"""
-
-    def __init__(self, kernel_size):
-        radias = kernel_size // 2
-        kernel_size = radias * 2 + 1
-        self.blur_h = nn.Conv2d(3, 3, kernel_size=(kernel_size, 1),
-                                stride=1, padding=0, bias=False, groups=3)
-        self.blur_v = nn.Conv2d(3, 3, kernel_size=(1, kernel_size),
-                                stride=1, padding=0, bias=False, groups=3)
-        self.k = kernel_size
-        self.r = radias
-
-        self.blur = nn.Sequential(
-            nn.ReflectionPad2d(radias),
-            self.blur_h,
-            self.blur_v
-        )
-
-        self.pil_to_tensor = transforms.ToTensor()
-        self.tensor_to_pil = transforms.ToPILImage()
-
-    def __call__(self, img):
-        img = self.pil_to_tensor(img).unsqueeze(0)
-
-        sigma = np.random.uniform(0.1, 2.0)
-        x = np.arange(-self.r, self.r + 1)
-        x = np.exp(-np.power(x, 2) / (2 * sigma * sigma))
-        x = x / x.sum()
-        x = torch.from_numpy(x).view(1, -1).repeat(3, 1)
-
-        self.blur_h.weight.data.copy_(x.view(3, 1, self.k, 1))
-        self.blur_v.weight.data.copy_(x.view(3, 1, 1, self.k))
-
-        with torch.no_grad():
-            img = self.blur(img)
-            img = img.squeeze()
-
-        img = self.tensor_to_pil(img)
-
-        return img
-
-
-class SimCLRTransform:
-    def __init__(self, size, s=1):
-        color_jitter = transforms.ColorJitter(0.4 * s, 0.4 * s, 0.4 * s, 0.1 * s)
-        normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-        data_transforms = transforms.Compose([transforms.RandomResizedCrop(size=size),
-                                              transforms.RandomHorizontalFlip(),
-                                              transforms.RandomApply([color_jitter], p=0.8),
-                                              transforms.RandomGrayscale(p=0.2),
-                                              GaussianBlur(kernel_size=int(0.1 * size)),
-                                              transforms.ToTensor(),
-                                              normalize])
-        self.transform = data_transforms
-
-    def __call__(self, x):
-        x1 = self.transform(x)
-        x2 = self.transform(x)
-        return x1, x2
-
-
-class FixMatchTransform:
-    def __init__(self, size=224, n_weak=1, n_anchor=1, augtype='fixmatch'):
+class StrongAugment:
+    def __init__(self, size=224, n_weak=0, n_strong=2):
         self.weak = transforms.Compose([
             transforms.RandomHorizontalFlip(),
             # Attention: resize smaller edge to target size
@@ -128,12 +60,12 @@ class FixMatchTransform:
             transforms.RandomHorizontalFlip(),
             transforms.Resize(int(size * 1.15)),
             transforms.CenterCrop(size),
-            RandAugmentMC(n=2, m=10, augtype=augtype)])
+            RandAugmentMC(n=2, m=10)])
         self.normalize = transforms.Compose([
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
-        self.n_anchor = n_anchor
+        self.n_strong = n_strong
         self.n_weak = n_weak
 
     def __call__(self, x):
@@ -141,7 +73,7 @@ class FixMatchTransform:
         for i in range(self.n_weak):
             weak = self.normalize(self.weak(x))
             out.append(weak)
-        for i in range(self.n_anchor):
+        for i in range(self.n_strong):
             strong = self.normalize(self.strong(x))
             out.append(strong)
         if len(out) == 1:
@@ -167,26 +99,6 @@ class DatasetWithIndex:
         return len(self.dataset)
 
 
-class DatasetWithRotation:
-    def __init__(self, dataset):
-        self.dataset = dataset
-        self.rot = True
-
-    def __getitem__(self, i):
-        if not self.rot:
-            return self.dataset[i]
-        input = list(self.dataset[i])
-        img = input[0]
-        rot = random.choice(range(4))
-        img = torch.rot90(img, k=rot, dims=[1, 2])
-        input[0] = img
-        input[1] = (input[1], rot)
-        return tuple(input)
-
-    def __len__(self):
-        return len(self.dataset)
-
-
 class SimpleDataManager(DataManager):
     def __init__(self, image_size, batch_size):
         super(SimpleDataManager, self).__init__()
@@ -194,50 +106,31 @@ class SimpleDataManager(DataManager):
         self.trans_loader = TransformLoader(image_size)
         self.image_size = image_size
 
-    def get_data_loader(self, data_folder=None, add_label=False, aug=None, with_idx=False,
-                        rot=False, simclr_trans=False, fixmatch_trans=False, fixmatch_anchor=1,
-                        fixmatch_weak=1, augtype='fixmatch', drop_last=False):  # parameters that would change on train/val set
-        if simclr_trans:
-            transform = SimCLRTransform(self.image_size)
-        elif fixmatch_trans:
-            transform = FixMatchTransform(self.image_size, fixmatch_weak, fixmatch_anchor, augtype)
+    def get_data_loader(self, data_folder=None, with_idx=False, aug=None, aug_type='none', drop_last=False):  # parameters that would change on train/val set
+        if aug_type == 'strong':
+            transform = StrongAugment(self.image_size, n_weak=0, n_strong=2)
+        elif aug_type == 'weak':
+            transform = StrongAugment(self.image_size, n_weak=2, n_strong=0)
         else:
             transform = self.trans_loader.get_composed_transform(aug)
+
         if not isinstance(data_folder, list):
             dataset = torchvision.datasets.ImageFolder(data_folder, transform)
         else:
-            class AddLabel:
-                def __init__(self, base):
-                    self.base = base
-
-                def __call__(self, label):
-                    return label + self.base
-
             dataset = []
-            n_class = 0
             for folder in data_folder:
-                if add_label:
-                    target_transform = AddLabel(n_class)
-                else:
-                    target_transform = None
-                dataset.append(torchvision.datasets.ImageFolder(folder, transform, target_transform))
-                n_class += len(dataset[-1].classes)
-
+                dataset.append(torchvision.datasets.ImageFolder(folder, transform))
             dataset = torch.utils.data.ConcatDataset(dataset)
         if with_idx:
             dataset = DatasetWithIndex(dataset)
-        if rot:
-            dataset = DatasetWithRotation(dataset)
         data_loader_params = dict(batch_size=self.batch_size, shuffle=True, num_workers=12, drop_last=drop_last)
-        if simclr_trans:
-            data_loader_params['drop_last'] = True
         data_loader = torch.utils.data.DataLoader(dataset, **data_loader_params)
 
         return data_loader
 
 
 class SetDataManager(DataManager):
-    def __init__(self, image_size, n_way, n_support, n_query, n_episode=-1, fixmatch_resize=False):
+    def __init__(self, image_size, n_way, n_support, n_query, n_episode=-1, aug_type='none'):
         super(SetDataManager, self).__init__()
         self.image_size = image_size
         self.n_way = n_way
@@ -245,23 +138,17 @@ class SetDataManager(DataManager):
         self.n_support = n_support
         self.n_query = n_query
         self.n_episode = n_episode
+        if aug_type == 'none':
+            self.trans_loader = TransformLoader(image_size, keep_ratio=False)
+        else:
+            self.trans_loader = TransformLoader(image_size, keep_ratio=True)
 
-        self.trans_loader = TransformLoader(image_size, fixmatch_resize)
 
     def get_data_loader(self, data_file=None, data_folder=None, aug=False,
                         fix_seed=False):  # parameters that would change on train/val set
         transform = self.trans_loader.get_composed_transform(aug)
-        # if isinstance(data_folder, list):
-        #     dataset = SetDataset(data_file, data_folder, [self.n_support, self.n_query], transform)
-        # else:
-        #     dataset = SetDataset( data_file, data_folder, self.batch_size, transform )
         dataset = EpisodeDataset(data_folder, transform, self.n_way, self.n_support, self.n_query, self.n_episode,
                                  fix_seed)
-        # if self.n_episode < 0:
-        #     self.n_episode = int(dataset.get_sample_number() / (self.n_way * self.batch_size))
-        # sampler = EpisodicBatchSampler(len(dataset), self.n_way, self.n_episode, fix_seed)
         data_loader_params = dict(num_workers=12, pin_memory=True, batch_size=1)
         data_loader = torch.utils.data.DataLoader(dataset, **data_loader_params)
         return data_loader
-
-

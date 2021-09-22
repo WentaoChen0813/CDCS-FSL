@@ -1,0 +1,10 @@
+Bed
+Computer
+Couch
+Flowers
+Marker
+Mop
+Notebook
+Pan
+Shelf
+Soda

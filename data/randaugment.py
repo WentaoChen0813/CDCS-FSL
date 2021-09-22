@@ -165,16 +165,6 @@ def fixmatch_augment_pool():
             (TranslateY, 0.3, 0)]
     return augs
 
-def geometry_augment_pool():
-    augs = [(Identity, None, None),
-            (Rotate, 30, 0),
-            (ShearX, 0.3, 0),
-            (ShearY, 0.3, 0),
-            (Solarize, 256, 0),
-            (TranslateX, 0.3, 0),
-            (TranslateY, 0.3, 0)]
-    return augs
-
 
 def my_augment_pool():
     # Test
@@ -216,16 +206,12 @@ class RandAugmentPC(object):
 
 
 class RandAugmentMC(object):
-    def __init__(self, n, m, augtype='fixmatch'):
+    def __init__(self, n, m):
         assert n >= 1
         assert 1 <= m <= 10
         self.n = n
         self.m = m
-        self.augtype = augtype
-        if 'fixmatch' in augtype:
-            self.augment_pool = fixmatch_augment_pool()
-        elif (augtype == 'geometry') or (augtype == 'geometry+crop') :
-            self.augment_pool = geometry_augment_pool()
+        self.augment_pool = fixmatch_augment_pool()
 
     def __call__(self, img):
         ops = random.choices(self.augment_pool, k=self.n)
@@ -234,6 +220,5 @@ class RandAugmentMC(object):
             if random.random() < 0.5:
                 img = op(img, v=v, max_v=max_v, bias=bias)
         img = CutoutAbs(img, int(224*0.5))
-        if 'crop' in self.augtype:
-            img = torchvision.transforms.RandomResizedCrop(224, scale=(0.5, 1))(img)
+        img = torchvision.transforms.RandomResizedCrop(224, scale=(0.5, 1))(img)
         return img

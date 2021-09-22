@@ -44,18 +44,6 @@ class distLinear(nn.Module):
 
         return scores
 
-class protoLinear(nn.Module):
-    def __init__(self, indim, outdim):
-        super().__init__()
-        self.prototypes = nn.Parameter(torch.ones(indim, outdim))
-        nn.init.kaiming_uniform_(self.prototypes)
-
-    def forward(self, x):
-        dist = (x.unsqueeze(-1) - self.prototypes.unsqueeze(0)) ** 2
-        dist = dist.sum(dim=1)
-        score = -dist
-        return score
-
 class Flatten(nn.Module):
     def __init__(self):
         super(Flatten, self).__init__()
@@ -145,238 +133,9 @@ class ConvBlock(nn.Module):
         return out
 
 
-class DANormalization(nn.BatchNorm2d):
-
-    def set_use_cache(self, mode=False):
-        self.use_cache = mode
-
-    def forward(self, input):
-        if not hasattr(self, 'use_cache'):
-            self.use_cache = False
-        self._check_input_dim(input)
-
-        # exponential_average_factor is set to self.momentum
-        # (when it is available) only so that if gets updated
-        # in ONNX graph when this node is exported to ONNX.
-        if self.momentum is None:
-            exponential_average_factor = 0.0
-        else:
-            exponential_average_factor = self.momentum
-
-        if self.training and self.track_running_stats and not self.use_cache:
-            if self.num_batches_tracked is not None:
-                self.num_batches_tracked = self.num_batches_tracked + 1
-                if self.momentum is None:  # use cumulative moving average
-                    exponential_average_factor = 1.0 / float(self.num_batches_tracked)
-                else:  # use exponential moving average
-                    exponential_average_factor = self.momentum
-
-        if self.use_cache:
-            # only use cache once until set it manually
-            self.use_cache = False
-            return F.batch_norm(
-            input, self.cache_mean, self.cache_var, self.weight, self.bias,
-            False, exponential_average_factor, self.eps)
-        else:
-            with torch.no_grad():
-                self.cache_mean = torch.mean(input, dim=(0, 2, 3))
-                self.cache_var = torch.var(input, dim=(0, 2, 3), unbiased=False)
-            return F.batch_norm(
-                input, self.running_mean, self.running_var, self.weight, self.bias,
-                self.training or not self.track_running_stats,
-                exponential_average_factor, self.eps)
-
-
-class DSBatchNorm(nn.Module):
-    def __init__(self, channels):
-        super().__init__()
-        self.bn1 = nn.BatchNorm2d(channels)
-        self.bn2 = nn.BatchNorm2d(channels)
-        self.choice = 'a'
-
-    def forward(self, input):
-        if self.choice == 'a':
-            return self.bn1(input)
-        elif self.choice == 'b':
-            # use bn1 as default, use bn2 only once after manually setting.
-            self.choice = 'a'
-            return self.bn2(input)
-        elif self.choice == 'split':
-            self.choice = 'a'
-            x1, x2 = torch.chunk(input, 2, dim=0)
-            x1 = self.bn1(x1)
-            x2 = self.bn2(x2)
-            return torch.cat([x1, x2], dim=0)
-
-    def set_choice(self, choice):
-        assert choice in ['a', 'b', 'split']
-        self.choice = choice
-
-
-class AdaBatchNorm(nn.Module):
-    def __init__(self, channels):
-        super().__init__()
-        self.bn1 = nn.BatchNorm2d(channels)
-        self.bn2 = nn.BatchNorm2d(channels)
-        self.bn2.weight = self.bn1.weight
-        self.bn2.bias = self.bn1.bias
-        self.choice = 'a'
-
-    def forward(self, input):
-        if self.choice == 'a':
-            return self.bn1(input)
-        elif self.choice == 'b':
-            # use bn1 as default, use bn2 only once after manually setting.
-            self.choice = 'a'
-            return self.bn2(input)
-        elif self.choice == 'split':
-            self.choice = 'a'
-            x1, x2 = torch.chunk(input, 2, dim=0)
-            x1 = self.bn1(x1)
-            x2 = self.bn2(x2)
-            return torch.cat([x1, x2], dim=0)
-
-    def set_choice(self, choice):
-        assert choice in ['a', 'b', 'split']
-        self.choice = choice
-
-
-class AdaptiveSharedBatchNorm(nn.BatchNorm2d):
-    def __init__(self, num_features, eps=1e-5, momentum=0.1, affine=True,
-                 track_running_stats=True):
-        super().__init__(num_features, eps, momentum, affine, track_running_stats)
-        self.alpha = nn.Parameter(torch.tensor(0.5), requires_grad=True)
-
-    def forward(self, input):
-        self._check_input_dim(input)
-
-        # exponential_average_factor is set to self.momentum
-        # (when it is available) only so that if gets updated
-        # in ONNX graph when this node is exported to ONNX.
-        if self.momentum is None:
-            exponential_average_factor = 0.0
-        else:
-            exponential_average_factor = self.momentum
-
-        if self.training and self.track_running_stats:
-            if self.num_batches_tracked is not None:
-                self.num_batches_tracked = self.num_batches_tracked + 1
-                if self.momentum is None:  # use cumulative moving average
-                    exponential_average_factor = 1.0 / float(self.num_batches_tracked)
-                else:  # use exponential moving average
-                    exponential_average_factor = self.momentum
-
-        if self.training:
-            alpha = torch.clamp(self.alpha, 0., 1.)
-            x1, x2 = torch.chunk(input, 2, dim=0)
-            mean1 = torch.mean(x1, dim=(0, 2, 3))
-            mean2 = torch.mean(x2, dim=(0, 2, 3))
-            mean = alpha * mean1 + (1-alpha) * mean2
-            var1 = ((x1 - mean.view(1, -1, 1, 1))**2).mean(dim=(0, 2, 3))
-            var2 = ((x2 - mean.view(1, -1, 1, 1))**2).mean(dim=(0, 2, 3))
-            var = alpha * var1 + (1-alpha) * var2
-            input = (input - mean.view(1, -1, 1, 1)) / torch.sqrt(var.view(1, -1, 1, 1) + self.eps)
-            input = self.weight.view(1, -1, 1, 1) * input + self.bias.view(1, -1, 1, 1)
-            with torch.no_grad():
-                self.running_mean = (1 - exponential_average_factor) * self.running_mean + exponential_average_factor * mean
-                self.running_var = (1 - exponential_average_factor) * self.running_var + exponential_average_factor * var
-            return input
-        else:
-            return F.batch_norm(
-                input, self.running_mean, self.running_var, self.weight, self.bias,
-                self.training or not self.track_running_stats,
-                exponential_average_factor, self.eps)
-
-
-class DSConv(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size, stride=1,
-                 padding=0, bias=True):
-        super().__init__()
-        self.conv0 = nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding, bias=bias)
-        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding, bias=bias)
-        self.conv2 = nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding, bias=bias)
-        self.choice = '0'
-
-    def forward(self, input):
-        if self.choice == '0':
-            return self.conv0(input)
-        elif self.choice == 'a':
-            self.choice = '0'
-            return self.conv0(input) + self.conv1(input)
-        elif self.choice == 'b':
-            self.choice = '0'
-            return self.conv0(input) + self.conv2(input)
-        elif self.choice == 'split':
-            self.choice = '0'
-            x1, x2 = torch.chunk(input, 2)
-            x1 = self.conv0(x1) + self.conv1(x1)
-            x2 = self.conv0(x2) + self.conv2(x2)
-            return torch.cat([x1, x2])
-
-    def set_choice(self, choice):
-        assert choice in ['0', 'a', 'b', 'split']
-        self.choice = choice
-
-
-class DSWBNorm(nn.BatchNorm2d):
-    def __init__(self, num_features, eps=1e-5, momentum=0.1, affine=True,
-                 track_running_stats=True):
-        super().__init__(num_features, eps, momentum, affine, track_running_stats)
-        self.weight2 = nn.Parameter(torch.ones_like(self.weight), requires_grad=True)
-        self.bias2 = nn.Parameter(torch.zeros_like(self.bias), requires_grad=True)
-        self.choice = 'a'
-
-    def forward(self, input):
-        self._check_input_dim(input)
-
-        # exponential_average_factor is set to self.momentum
-        # (when it is available) only so that if gets updated
-        # in ONNX graph when this node is exported to ONNX.
-        if self.momentum is None:
-            exponential_average_factor = 0.0
-        else:
-            exponential_average_factor = self.momentum
-
-        if self.training and self.track_running_stats:
-            if self.num_batches_tracked is not None:
-                self.num_batches_tracked = self.num_batches_tracked + 1
-                if self.momentum is None:  # use cumulative moving average
-                    exponential_average_factor = 1.0 / float(self.num_batches_tracked)
-                else:  # use exponential moving average
-                    exponential_average_factor = self.momentum
-
-        if self.choice == 'a':
-            return F.batch_norm(
-                input, self.running_mean, self.running_var, self.weight, self.bias,
-                self.training or not self.track_running_stats,
-                exponential_average_factor, self.eps)
-        elif self.choice == 'b':
-            self.choice = 'a'
-            return F.batch_norm(
-                input, self.running_mean, self.running_var, self.weight2, self.bias2,
-                self.training or not self.track_running_stats,
-                exponential_average_factor, self.eps)
-        elif self.choice == 'split':
-            self.choice = 'a'
-            x1, x2 = torch.chunk(input, 2, dim=0)
-            x1 = F.batch_norm(
-                x1, self.running_mean, self.running_var, self.weight, self.bias,
-                self.training or not self.track_running_stats,
-                exponential_average_factor, self.eps)
-            x2 = F.batch_norm(
-                x2, self.running_mean, self.running_var, self.weight2, self.bias2,
-                self.training or not self.track_running_stats,
-                exponential_average_factor, self.eps)
-            return torch.cat([x1, x2])
-
-    def set_choice(self, choice):
-        assert choice in ['a', 'b', 'split']
-        self.choice = choice
-
 # Simple ResNet Block
 class SimpleBlock(nn.Module):
     maml = False #Default
-    bn = 'normal'
     def __init__(self, indim, outdim, half_res):
         super(SimpleBlock, self).__init__()
         self.indim = indim
@@ -388,27 +147,9 @@ class SimpleBlock(nn.Module):
             self.BN2 = BatchNorm2d_fw(outdim)
         else:
             self.C1 = nn.Conv2d(indim, outdim, kernel_size=3, stride=2 if half_res else 1, padding=1, bias=False)
-            self.C2 = nn.Conv2d(outdim, outdim,kernel_size=3, padding=1,bias=False)
-            if self.bn in ['normal', 'dsconv']:
-                self.BN1 = nn.BatchNorm2d(outdim)
-                self.BN2 = nn.BatchNorm2d(outdim)
-            elif self.bn == 'dan':
-                self.BN1 = DANormalization(outdim)
-                self.BN2 = DANormalization(outdim)
-            elif self.bn == 'dsbn':
-                self.BN1 = DSBatchNorm(outdim)
-                self.BN2 = DSBatchNorm(outdim)
-            elif self.bn == 'adabn':
-                self.BN1 = AdaBatchNorm(outdim)
-                self.BN2 = AdaBatchNorm(outdim)
-            elif self.bn == 'asbn':
-                self.BN1 = AdaptiveSharedBatchNorm(outdim)
-                self.BN2 = AdaptiveSharedBatchNorm(outdim)
-            elif self.bn == 'dswb':
-                self.BN1 = DSWBNorm(outdim)
-                self.BN2 = DSWBNorm(outdim)
-            else:
-                raise ValueError(self.bn)
+            self.BN1 = nn.BatchNorm2d(outdim)
+            self.C2 = nn.Conv2d(outdim, outdim, kernel_size=3, padding=1, bias=False)
+            self.BN2 = nn.BatchNorm2d(outdim)
         self.relu1 = nn.ReLU(inplace=True)
         self.relu2 = nn.ReLU(inplace=True)
 
@@ -423,20 +164,7 @@ class SimpleBlock(nn.Module):
                 self.BNshortcut = BatchNorm2d_fw(outdim)
             else:
                 self.shortcut = nn.Conv2d(indim, outdim, 1, 2 if half_res else 1, bias=False)
-                if self.bn in ['normal', 'dsconv']:
-                    self.BNshortcut = nn.BatchNorm2d(outdim)
-                elif self.bn == 'dan':
-                    self.BNshortcut = DANormalization(outdim)
-                elif self.bn == 'dsbn':
-                    self.BNshortcut = DSBatchNorm(outdim)
-                elif self.bn == 'adabn':
-                    self.BNshortcut = AdaBatchNorm(outdim)
-                elif self.bn == 'asbn':
-                    self.BNshortcut = AdaptiveSharedBatchNorm(outdim)
-                elif self.bn == 'dswb':
-                    self.BNshortcut = DSWBNorm(outdim)
-                else:
-                    raise ValueError(self.bn)
+                self.BNshortcut = nn.BatchNorm2d(outdim)
 
             self.parametrized_layers.append(self.shortcut)
             self.parametrized_layers.append(self.BNshortcut)
