@@ -1,12 +1,12 @@
 import numpy as np
 import torch
 import torch.optim
+from torch.utils.tensorboard import SummaryWriter
 import time
 import os
 import random
 import copy
 
-from Logger import Logger
 import backbone
 from data.datamgr import SimpleDataManager, SetDataManager
 from methods.baselinetrain import BaselineTrain
@@ -43,15 +43,15 @@ def train(base_loader, val_loader, model, optimization, start_epoch, stop_epoch,
             scheduler.step()
         print(f'Training time: {time.time() - end:.0f} s')
         if not isinstance(loss, dict):
-            params.logger.scalar_summary('train/loss', loss, epoch)
+            params.logger.add_scalar('train/loss', loss, epoch)
         else:
             for key, value in loss.items():
-                params.logger.scalar_summary(f'train/{key}', value, epoch)
+                params.logger.add_scalar(f'train/{key}', value, epoch)
 
         if epoch % params.test_freq == 0:
             model.eval()
             acc = model.test_loop(epoch, val_loader, params)
-            params.logger.scalar_summary('test/acc', acc, epoch)
+            params.logger.add_scalar('test/acc', acc, epoch)
             if acc > max_acc :
                 print("best model! save...")
                 max_acc = acc
@@ -174,7 +174,7 @@ if __name__ == '__main__':
     log_dir = params.checkpoint_dir.replace('checkpoints', 'tensorboard')
     if not os.path.isdir(log_dir):
         os.makedirs(log_dir)
-    params.logger = Logger(log_dir)
+    params.logger = SummaryWriter(log_dir)
 
     start_epoch = params.start_epoch
     stop_epoch = params.stop_epoch

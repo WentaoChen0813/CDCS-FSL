@@ -53,11 +53,10 @@ class StrongAugment:
     def __init__(self, size=224, n_weak=0, n_strong=2):
         self.weak = transforms.Compose([
             transforms.RandomHorizontalFlip(),
-            # Attention: resize smaller edge to target size
-            transforms.Resize(int(size * 1.15)),
-            transforms.CenterCrop(size)])
+            transforms.RandomResizedCrop(224, scale=(0.5, 1))])
         self.strong = transforms.Compose([
             transforms.RandomHorizontalFlip(),
+            # Attention: resize smaller edge to target size
             transforms.Resize(int(size * 1.15)),
             transforms.CenterCrop(size),
             RandAugmentMC(n=2, m=10)])
