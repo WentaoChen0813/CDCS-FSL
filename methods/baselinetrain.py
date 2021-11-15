@@ -31,7 +31,7 @@ class BaselineTrain(nn.Module):
             self.register_buffer('target_proto', torch.zeros(self.num_class, self.feature.final_feat_dim))
             self.iter_num = 0
             self.max_iter = 50000
-            self.alpha = params.st_align_alpha
+            self.alpha = 1.
             self.st_align_lw = 0.
             self.st_align_tau = nn.Parameter(torch.tensor(1.)*params.st_align_tau)
         if params.ts_align:
