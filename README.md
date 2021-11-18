@@ -2,7 +2,7 @@
 
 This is the PyTorch implementation of stabPA.
 
-![avatar](pictures/setting.jpg)
+![avatar](pictures/setting.png)
 
 ## Prerequisites
 We run this code with Ubuntu 16.04.5 LTS, Python 3.7 and Pytorch 1.4.0. qpth is also needed if you want to test MetaOptNet.
