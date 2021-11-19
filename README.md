@@ -24,7 +24,7 @@ We run this code with Ubuntu 16.04.5 LTS, Python 3.7 and Pytorch 1.4.0. qpth is 
 ```
 python main.py --gpu 0 --dataset DomainNet --cross_domain painting --exp baseline
 ```
-This will automatically test the 5-shot accuracy on the validation set.
+This will automatically test the 5-way 5-shot accuracy on the validation set of painting-real.
 
 
 ## Train
